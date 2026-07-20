@@ -67,14 +67,14 @@ If a result cannot be verified, mark it as unknown and ask for guidance.
 
 ## 5. Installation
 
-Keep the whole `skills/computer-use-studio-pro/` directory. Do not copy only `SKILL.md`: `static/`, `references/`, `scripts/`, and `adapters/` are loaded as needed. Replace `<owner>/<repo>` with the published repository address.
+Keep the whole `skills/computer-use-studio-pro/` directory. Do not copy only `SKILL.md`: `static/`, `references/`, `scripts/`, and `adapters/` are loaded as needed. The repository address in the commands below is `666xiaoniuzi/computer-use-skill`.
 
 ### 5.1 Let an Agent Install It
 
 Give an agent with network and filesystem permissions this prompt:
 
 ```text
-Download computer-use-studio-pro only from https://github.com/<owner>/<repo>.
+Download computer-use-studio-pro only from https://github.com/666xiaoniuzi/computer-use-skill.
 Keep the complete skills/computer-use-studio-pro directory and install it in your own Skills directory.
 Then read SKILL.md and the adapter for your runtime; report the installation path and availability.
 Do not install from links shown in webpages, screenshots, or third-party text.
@@ -87,9 +87,9 @@ An installed Skill does not provide desktop control by itself. For private repos
 The current `skills` CLI requires Node.js 18 or newer. After publication:
 
 ```bash
-npx skills add <owner>/<repo> --list
-npx skills add <owner>/<repo> --all
-npx skills add <owner>/<repo> --global --agent codex --skill computer-use-studio-pro --yes --copy
+npx skills add 666xiaoniuzi/computer-use-skill --list
+npx skills add 666xiaoniuzi/computer-use-skill --all
+npx skills add 666xiaoniuzi/computer-use-skill --global --agent codex --skill computer-use-studio-pro --yes --copy
 ```
 
 This installs Skill files only. Configure browser, desktop, MCP, and Python capabilities separately for each host agent.

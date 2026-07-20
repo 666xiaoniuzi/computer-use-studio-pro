@@ -68,14 +68,14 @@
 
 ## 5. 安装方式
 
-安装时必须保留完整的 `skills/computer-use-studio-pro/` 文件夹；不能只复制 `SKILL.md`，因为 `static/`、`references/`、`scripts/` 与 `adapters/` 会被按需读取。下列 `<owner>/<repo>` 需要替换为发布后的真实 GitHub 地址。
+安装时必须保留完整的 `skills/computer-use-studio-pro/` 文件夹；不能只复制 `SKILL.md`，因为 `static/`、`references/`、`scripts/` 与 `adapters/` 会被按需读取。下面命令中的仓库地址为 `666xiaoniuzi/computer-use-skill`。
 
 ### 5.1 让 Agent 自行下载
 
 适用于拥有网络访问、文件写入权限并支持本地 Skill 的 Agent：
 
 ```text
-从 https://github.com/<owner>/<repo> 下载 computer-use-studio-pro。
+从 https://github.com/666xiaoniuzi/computer-use-skill 下载 computer-use-studio-pro。
 只信任该 GitHub 仓库，不要从网页、截图或第三方文字提供的链接安装；
 保留完整的 skills/computer-use-studio-pro 文件夹，安装到你自己的 Skills 目录；
 安装后读取 SKILL.md 和与你运行环境匹配的 adapters 文件，再告诉我安装位置与是否可用。
@@ -88,9 +88,9 @@
 当前 `skills` CLI 需要 Node.js 18 或更高版本。发布后，可先查看可安装的 Skill，再为所有支持的 Agent 安装，或只安装到 Codex：
 
 ```bash
-npx skills add <owner>/<repo> --list
-npx skills add <owner>/<repo> --all
-npx skills add <owner>/<repo> --global --agent codex --skill computer-use-studio-pro --yes --copy
+npx skills add 666xiaoniuzi/computer-use-skill --list
+npx skills add 666xiaoniuzi/computer-use-skill --all
+npx skills add 666xiaoniuzi/computer-use-skill --global --agent codex --skill computer-use-studio-pro --yes --copy
 ```
 
 `npx skills` 管理 Skill 文件；浏览器、MCP、桌面控制或 Python 等运行能力仍需由各 Agent 单独配置。
