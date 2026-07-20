@@ -4,7 +4,7 @@
 
 ![Computer Use Studio Pro: cross-agent computer automation](assets/computer-use-studio-pro-banner.png)
 
-[![license](https://img.shields.io/badge/license-MIT-green)](LICENSE) [![install Codex](https://img.shields.io/badge/install-Codex-blue)](#53-codex) [![install Claude Code](https://img.shields.io/badge/install-Claude%20Code-blue)](#54-claude-code) [![install Hermes](https://img.shields.io/badge/install-Hermes-blue)](#55-hermes) [![install OpenClaw](https://img.shields.io/badge/install-OpenClaw-blue)](#56-openclaw) [![language](https://img.shields.io/badge/language-中文%20%7C%20English-blue)](README.md)
+[![license](https://img.shields.io/badge/license-MIT-green)](LICENSE) [![install](https://img.shields.io/badge/-install-555)](#5-installation) [![Codex](https://img.shields.io/badge/-Codex-blue)](#53-codex) [![Claude Code](https://img.shields.io/badge/-Claude%20Code-blue)](#54-claude-code) [![Hermes](https://img.shields.io/badge/-Hermes-blue)](#55-hermes) [![OpenClaw](https://img.shields.io/badge/-OpenClaw-blue)](#56-openclaw) [![中文](https://img.shields.io/badge/language-中文-blue)](README.md) [![English](https://img.shields.io/badge/-English-blue)](README_EN.md)
 
 [中文](README.md) · [Installation](#5-installation) · [Features](#3-core-features)
 
