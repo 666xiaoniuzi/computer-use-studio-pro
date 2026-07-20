@@ -1,0 +1,4 @@
+interface:
+  display_name: "Computer Use Studio Pro"
+  short_description: "Locally verified, low-latency computer control"
+  default_prompt: "Use $computer-use-studio-pro to take the fastest safe route, keep straight-line reversible work local, and return compact verified results."
