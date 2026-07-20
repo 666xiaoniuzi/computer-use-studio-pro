@@ -1,10 +1,14 @@
 # Computer Use Studio Pro
 
-[中文](README.md) · [Installation](#5-installation) · [Features](#3-core-features)
+<div align="center">
 
 ![Computer Use Studio Pro: cross-agent computer automation](assets/computer-use-studio-pro-banner.png)
 
 ![license](https://img.shields.io/badge/license-MIT-green) ![install](https://img.shields.io/badge/install-Codex%20%7C%20Claude%20Code%20%7C%20Hermes%20%7C%20OpenClaw-blue) ![language](https://img.shields.io/badge/language-中文%20%7C%20English-blue)
+
+[中文](README.md) · [Installation](#5-installation) · [Features](#3-core-features)
+
+</div>
 
 > A cross-agent Skill for reliable, verified desktop, browser, and file automation with fewer unnecessary observations and model roundtrips.
 

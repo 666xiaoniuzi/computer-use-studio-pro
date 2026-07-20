@@ -1,10 +1,14 @@
 # Computer Use Studio Pro
 
-[English](README_EN.md) · [安装方式](#5-安装方式) · [功能](#3-核心功能)
+<div align="center">
 
 ![Computer Use Studio Pro：跨智能体电脑自动化](assets/computer-use-studio-pro-banner.png)
 
 ![license](https://img.shields.io/badge/license-MIT-green) ![install](https://img.shields.io/badge/install-Codex%20%7C%20Claude%20Code%20%7C%20Hermes%20%7C%20OpenClaw-blue) ![language](https://img.shields.io/badge/language-中文%20%7C%20English-blue)
+
+[English](README_EN.md) · [安装方式](#5-安装方式) · [功能](#3-核心功能)
+
+</div>
 
 > 面向多种 AI 智能体的电脑操作 Skill：以更少的无效观察和模型往返，完成更可靠、可验证的桌面、浏览器和文件任务。
 
