@@ -4,7 +4,7 @@
 
 ![Computer Use Studio Pro：跨智能体电脑自动化](assets/computer-use-studio-pro-banner.png)
 
-![license](https://img.shields.io/badge/license-MIT-green) ![install](https://img.shields.io/badge/install-Codex%20%7C%20Claude%20Code%20%7C%20Hermes%20%7C%20OpenClaw-blue) ![language](https://img.shields.io/badge/language-中文%20%7C%20English-blue)
+[![license](https://img.shields.io/badge/license-MIT-green)](LICENSE) [![install Codex](https://img.shields.io/badge/install-Codex-blue)](#53-codex) [![install Claude Code](https://img.shields.io/badge/install-Claude%20Code-blue)](#54-claude-code) [![install Hermes](https://img.shields.io/badge/install-Hermes-blue)](#55-hermes) [![install OpenClaw](https://img.shields.io/badge/install-OpenClaw-blue)](#56-openclaw) [![language](https://img.shields.io/badge/language-中文%20%7C%20English-blue)](README_EN.md)
 
 [English](README_EN.md) · [安装方式](#5-安装方式) · [功能](#3-核心功能)
 
