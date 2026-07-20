@@ -72,7 +72,14 @@ def empty_metrics() -> dict:
 
 
 def read(path: Path) -> dict:
-    data = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as error:
+        raise SystemExit(f"state file does not exist: {path}") from error
+    except json.JSONDecodeError as error:
+        raise SystemExit(f"state file is not valid JSON: {path}: {error}") from error
+    if not isinstance(data, dict):
+        raise SystemExit(f"state file root must be a JSON object: {path}")
     schema = data.get("schema")
     if schema in (1, 2):
         data["schema"] = SCHEMA
@@ -86,6 +93,38 @@ def read(path: Path) -> dict:
                 metrics.setdefault(key, value)
     elif schema != SCHEMA:
         raise SystemExit(f"unsupported state schema: {schema!r}")
+    data.setdefault("owner", "")
+    data.setdefault("stage", "G0-CONTRACT")
+    data.setdefault("app", "")
+    data.setdefault("window", "")
+    data.setdefault("layout_epoch", 0)
+    data.setdefault("checkpoint", "")
+    data.setdefault("next_postcondition", "")
+    data.setdefault("committed_side_effects", [])
+    data.setdefault("pending_boundary", "")
+    if not isinstance(data.get("committed_side_effects"), list):
+        raise SystemExit(f"state field committed_side_effects must be a list: {path}")
+    retry = data.setdefault("retry", {})
+    if not isinstance(retry, dict):
+        raise SystemExit(f"state field retry must be an object: {path}")
+    retry.setdefault("by_pair", {})
+    retry.setdefault("by_signature", {})
+    if not isinstance(retry["by_pair"], dict) or not isinstance(retry["by_signature"], dict):
+        raise SystemExit(f"state retry counters must be objects: {path}")
+    metrics = data.setdefault("metrics", {})
+    if not isinstance(metrics, dict):
+        raise SystemExit(f"state field metrics must be an object: {path}")
+    defaults = empty_metrics()
+    for key, value in defaults.items():
+        if isinstance(value, dict):
+            bucket = metrics.setdefault(key, {})
+            for name, count in value.items():
+                bucket.setdefault(name, count)
+        else:
+            metrics.setdefault(key, value)
+    data.setdefault("events", [])
+    if not isinstance(data["events"], list):
+        raise SystemExit(f"state field events must be a list: {path}")
     return data
 
 
@@ -148,9 +187,10 @@ def touch(mapping: dict, key: str, limit: int) -> int:
 def cmd_init(args: argparse.Namespace) -> None:
     path = Path(args.state)
     with locked(path, break_stale=args.break_stale_lock):
-        if path.exists() and not args.force:
+        existed = path.exists()
+        if existed and not args.force:
             raise SystemExit(f"state already exists: {path}; pass --force to replace")
-        if args.force and not args.confirm_reset_state:
+        if existed and args.force and not args.confirm_reset_state:
             raise SystemExit("--force requires --confirm-reset-state because it replaces an existing checkpoint")
         timestamp = now()
         data = {
@@ -351,6 +391,33 @@ def self_test() -> None:
         with locked(path, stale_after=1, break_stale=True):
             pass
         assert not stale_lock.exists()
+        forced_new = Path(directory) / "forced-new.json"
+        cmd_init(argparse.Namespace(state=str(forced_new), task="demo", platform="other", actor=None, force=True, confirm_reset_state=False, break_stale_lock=False))
+        assert forced_new.exists()
+        malformed = Path(directory) / "malformed.json"
+        malformed.write_text("{", encoding="utf-8")
+        try:
+            read(malformed)
+        except SystemExit as error:
+            assert "not valid JSON" in str(error)
+        else:
+            raise AssertionError("malformed state was not rejected")
+        wrong_root = Path(directory) / "wrong-root.json"
+        wrong_root.write_text("[]", encoding="utf-8")
+        try:
+            read(wrong_root)
+        except SystemExit as error:
+            assert "root must be a JSON object" in str(error)
+        else:
+            raise AssertionError("non-object state was not rejected")
+        wrong_retry = Path(directory) / "wrong-retry.json"
+        wrong_retry.write_text(json.dumps({"schema": SCHEMA, "retry": []}), encoding="utf-8")
+        try:
+            read(wrong_retry)
+        except SystemExit as error:
+            assert "retry must be an object" in str(error)
+        else:
+            raise AssertionError("invalid retry state was not rejected")
     print("self-test: ok")
 
 

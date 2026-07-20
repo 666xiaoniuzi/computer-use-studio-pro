@@ -35,13 +35,19 @@ def clean_value(value: Any, max_text: int) -> Any:
     if isinstance(value, list):
         return [clean_value(item, max_text) for item in value[:8]]
     if isinstance(value, dict):
-        return {str(key): clean_value(item, max_text) for key, item in list(value.items())[:12]}
+        return {clean_text(str(key), max_text): clean_value(item, max_text) for key, item in list(value.items())[:12]}
     return value
+
+
+def truthy(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
 
 
 def is_sensitive(node: dict) -> bool:
     text = " ".join(str(node.get(key, "")) for key in ("role", "control_type", "name", "label")).lower()
-    return any(marker in text for marker in SENSITIVE_ROLES) or any(bool(node.get(key)) for key in ("is_password", "password", "protected", "sensitive"))
+    return any(marker in text for marker in SENSITIVE_ROLES) or any(truthy(node.get(key)) for key in ("is_password", "password", "protected", "sensitive"))
 
 
 def nodes(value: Any, trail: str = "$"):
@@ -57,17 +63,18 @@ def nodes(value: Any, trail: str = "$"):
 
 
 def node_identity(trail: str, node: dict, max_text: int, sensitive: bool = False) -> str:
+    safe_trail = clean_text(trail, min(max_text, 240))
     if sensitive:
         role = clean_text(str(node.get("role", "")), 48)
         bounds = clean_text(str(node.get("bounds") or node.get("rect") or ""), 96)
-        return f"sensitive:{role}|{bounds}|{trail}"
+        return f"sensitive:{role}|{bounds}|{safe_trail}"
     for key in IDENTITY:
         if node.get(key) not in (None, ""):
             return f"{key}:{clean_text(str(node[key]), min(max_text, 96))}"
     role = clean_text(str(node.get("role", "")), 48)
     name = clean_text(str(node.get("name") or node.get("label") or ""), min(max_text, 96))
     bounds = clean_text(str(node.get("bounds") or node.get("rect") or ""), 96)
-    return f"fallback:{role}|{name}|{bounds}|{trail}"
+    return f"fallback:{role}|{name}|{bounds}|{safe_trail}"
 
 
 def compact_node(node: dict, max_text: int) -> dict:
@@ -86,7 +93,7 @@ def index(tree: Any, max_text: int) -> dict[str, dict]:
     for trail, node in nodes(tree):
         key = node_identity(trail, node, max_text, is_sensitive(node))
         if key in result:
-            key = f"{key}@{trail}"
+            key = f"{key}@{clean_text(trail, min(max_text, 240))}"
         result[key] = compact_node(node, max_text)
     return result
 
@@ -126,10 +133,13 @@ def self_test() -> None:
         {"automation_id": "save", "role": "button", "name": "Save", "enabled": True},
         {"id": "pwd", "role": "password", "name": "Password: never-store-this", "value": "never-store-this"},
         {"id": "status", "role": "status", "name": "x" * 200},
+        {"role": "button", "name": "Fallback", "metadata": {"user@example.com": "token=abc123456789"}},
     ]}
     result = delta(before, after, 10, 40)
-    assert result["counts"] == {"before": 1, "after": 3, "added": 2, "removed": 0, "changed": 1}
+    assert result["counts"] == {"before": 1, "after": 4, "added": 3, "removed": 0, "changed": 1}
     assert "never-store-this" not in json.dumps(result)
+    assert "user@example.com" not in json.dumps(result)
+    assert "abc123456789" not in json.dumps(result)
     assert result["changed"][0]["fields"]["enabled"]["to"] is True
     assert "…" in json.dumps(result, ensure_ascii=False)
     with tempfile.TemporaryDirectory() as directory:

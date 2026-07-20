@@ -1,5 +1,5 @@
 name: computer-use-studio-pro
-version: 0.4.0
+version: 0.4.2
 description: >
   Cross-agent router for low-latency, verified computer, browser, and file
   automation. Runtime-specific tool calls are isolated in adapters.

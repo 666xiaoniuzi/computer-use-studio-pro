@@ -249,6 +249,11 @@ export async function runVerifiedTransaction(sky, observation, steps, options = 
     throw new Error("Transactions are limited to low-risk or reversible work");
   }
   if (!Array.isArray(steps) || steps.length === 0) throw new Error("Transaction requires at least one step");
+  for (let index = 0; index < steps.length; index += 1) {
+    if (steps[index]?.expect == null) {
+      throw new Error(`Transaction step ${index} requires an explicit postcondition`);
+    }
+  }
 
   const started = Date.now();
   let state = observation;
@@ -299,6 +304,12 @@ export async function runVerifiedTransaction(sky, observation, steps, options = 
 export async function fillEditable(sky, observation, options) {
   const value = String(options?.value ?? "");
   if (!Number.isInteger(options?.element_index)) throw new Error("fillEditable requires element_index");
+  const focusExpectation = options.focusExpect ?? ((state) => {
+    const focused = String(state?.accessibility?.focused_element ?? "").trim();
+    if (!focused) return false;
+    if (options.focusedIncludes != null) return focused.includes(String(options.focusedIncludes));
+    return new RegExp(`(?:^|\\D)${options.element_index}(?:\\D|$)`).test(focused);
+  });
   if (options.strategy === "direct") {
     return runVerifiedTransaction(sky, observation, [{
       method: "set_value",
@@ -307,8 +318,16 @@ export async function fillEditable(sky, observation, options) {
     }], { ...options, transactionClass: options.transactionClass ?? "local-reversible" });
   }
   return runVerifiedTransaction(sky, observation, [
-    { method: "click", args: { element_index: options.element_index } },
-    { method: "press_key", args: { key: "Ctrl+a" } },
+    {
+      method: "click",
+      args: { element_index: options.element_index },
+      expect: focusExpectation,
+    },
+    {
+      method: "press_key",
+      args: { key: "Ctrl+a" },
+      expect: focusExpectation,
+    },
     { method: "type_text", args: { text: value }, expect: options.expect ?? { includes: value }, include_screenshot: options.include_screenshot ?? false },
   ], { ...options, transactionClass: options.transactionClass ?? "local-reversible" });
 }
@@ -498,8 +517,22 @@ export async function selfTest() {
     throw new Error("compact-state redaction self-test failed");
   }
   let rejected = false;
-  try { await runVerifiedTransaction(mockSky, observation, [{ method: "click", args: { element_index: 13 } }], { risk: "consequential" }); } catch { rejected = true; }
+  try { await runVerifiedTransaction(mockSky, observation, [{ method: "click", args: { element_index: 13 }, expect: { includes: "Edit" } }], { transactionClass: "local-reversible", risk: "consequential" }); } catch { rejected = true; }
   if (!rejected) throw new Error("consequential transaction was not rejected");
+  let missingExpectationRejected = false;
+  try { await runVerifiedTransaction(mockSky, observation, [{ method: "click", args: { element_index: 13 } }], { transactionClass: "local-reversible", risk: "reversible" }); } catch { missingExpectationRejected = true; }
+  if (!missingExpectationRejected) throw new Error("transaction step without a postcondition was not rejected");
+  const wrongFocusSky = {
+    ...mockSky,
+    async get_window_state(input) {
+      calls.push(["get_window_state", input]);
+      return { window, accessibility: { focused_element: "99 Other", document_text: value, tree: `99 Other ${value}` }, screenshots: [] };
+    },
+  };
+  const wrongFocus = await fillEditable(wrongFocusSky, observation, { element_index: 13, value: "blocked", strategy: "keyboard", risk: "reversible" });
+  if (wrongFocus.ok || wrongFocus.outcome !== "failed" || wrongFocus.failed_step !== 0) {
+    throw new Error("fillEditable accepted focus on the wrong element");
+  }
   let badPointRejected = false;
   try { screenshotPoint({ window, screenshots: [{ id: "s", width: 10, height: 10, zIndex: 1 }] }, 10, 1); } catch { badPointRejected = true; }
   if (!badPointRejected) throw new Error("out-of-bounds screenshot point was not rejected");

@@ -1,6 +1,6 @@
 ---
 name: computer-use-studio-pro
-description: Cross-agent workflow for safe, low-latency, verified desktop, browser, and file automation. Use for GUI automation, Computer Use, browser control, dynamic UI, Office files, long cross-application tasks, unreliable OCR/coordinates, or requests to reduce repeated observations and model roundtrips.
+description: Safe, low-latency workflow for verified desktop, browser, and file automation across agents; use for GUI control, dynamic UIs, Office files, and recovery.
 ---
 
 # Computer Use Studio Pro
