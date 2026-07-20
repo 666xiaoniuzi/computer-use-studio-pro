@@ -97,7 +97,7 @@ This installs Skill files only. Configure browser, desktop, MCP, and Python capa
 ### 5.3 Codex
 
 ```powershell
-Copy-Item -Recurse -Force ".\skills\computer-use-studio-pro" "$env:USERPROFILE\.agents\skills\computer-use-studio-pro"
+Copy-Item -Recurse -Force ".\skills\computer-use-studio-pro" "$env:USERPROFILE\.codex\skills\computer-use-studio-pro"
 ```
 
 Codex normally detects skill changes automatically; restart Codex if the skill does not appear. The Codex fast path is used only on supported Windows Computer Use runtimes.

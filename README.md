@@ -98,7 +98,7 @@ npx skills add 666xiaoniuzi/computer-use-skill --global --agent codex --skill co
 ### 5.3 Codex
 
 ```powershell
-Copy-Item -Recurse -Force ".\skills\computer-use-studio-pro" "$env:USERPROFILE\.agents\skills\computer-use-studio-pro"
+Copy-Item -Recurse -Force ".\skills\computer-use-studio-pro" "$env:USERPROFILE\.codex\skills\computer-use-studio-pro"
 ```
 
 Codex 通常会自动检测 Skill 变更；若未出现，请重启 Codex。只有具备 Codex Windows Computer Use 运行时的环境才会加载 Codex 专用快速路径。
