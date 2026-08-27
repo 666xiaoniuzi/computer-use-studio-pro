@@ -19,7 +19,7 @@ Keep this as one Skill and one control runtime. The remote mode is an on-demand 
 Create a compact task frame before input:
 
 ```text
-mode | target app/window | remote device ID when applicable | task scope | success evidence | confirmation boundary
+mode | target app/window | remote device ID when applicable | operation surface | task goal | success evidence | confirmation boundary
 ```
 
 Infer observable details when one interpretation is clear. Ask only when a missing choice changes the target, authority, or required outcome.
@@ -63,6 +63,7 @@ Use a direct native route for short tasks with no semantic or transaction advant
 
 - Initialize the approved control runtime once per task and reuse it.
 - Bind one target window by app, returned handle, stable title cue, and optional remote-session identity cue; re-enumerate only after invalidation, target change, or connection loss.
+- In `remote-fast-fix`, default `operation_scope` to `entire-bound-device`. The ToDesk/Sunlogin window is the outer input channel; every desktop, drive, setting, application, terminal, service, network component, and registry area inside the locked customer device belongs to the operation surface. Diagnostic examples are not an app or subsystem allowlist. Keep the concrete requested goal as the task-completion boundary.
 - In `remote-fast-fix`, require one explicit customer device ID and activate one connected-session authorization lease before the first input. Each input evaluates only the cached in-process gate (`connected`, authorization active, Agent owns control); remote authorization, connection, device, and stop verifiers run at lease creation, accepted observations, explicit runtime events, and reconnect boundaries rather than before every keyboard or pointer action.
 - When the customer needs to enter a password, OTP, UAC credential, or other private value, call `pauseForUserInput`, keep the connected lease active, and suspend Agent input. After the customer finishes, call `resumeAgentControl` for one fresh observation and focus remap; reuse the same lease while the connection and target binding stayed intact.
 - A disconnect revokes the current authorization. Reconnect only to the same device, obtain a fresh authorization signal, capture a complete view, and resume from the last verified checkpoint rather than replaying completed actions.

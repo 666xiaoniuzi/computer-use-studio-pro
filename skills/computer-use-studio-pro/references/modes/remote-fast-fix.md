@@ -7,11 +7,11 @@ Read this profile only after selecting `mode=remote-fast-fix`. It extends the sh
 Before input, establish these fields in one pass:
 
 ```text
-remote client/window | exact customer device ID | concrete goal | allowed scope
+remote client/window | exact customer device ID | entire-device operation surface | concrete goal
 session authorization signal | success evidence | risk ceiling | mutation/time budget | takeover boundary
 ```
 
-When the request already identifies the active ToDesk/Sunlogin window and a concrete outcome, use the exact stated task as scope and infer the obvious visible success evidence. When several remote sessions are open or different outcomes imply materially different changes, ask one concise question.
+The default operation surface is `entire-bound-device`: all desktops, drives, system settings, applications, terminals, services, network components, and registry areas inside the locked customer computer. Network, proxy, Git, certificates, DNS, or Codex settings mentioned in a prompt are starting hypotheses rather than a subsystem allowlist. Use the concrete requested outcome as the task goal and infer the obvious visible success evidence. When several remote sessions are open or different outcomes imply materially different changes, ask one concise question.
 
 Default operational budget: risk ceiling `L1`, at most 20 remote mutations, 30 minutes, and two attempts for the same `failure signature + strategy`. Host confirmation rules remain active.
 
@@ -31,7 +31,7 @@ Default operational budget: risk ceiling `L1`, at most 20 remote mutations, 30 m
 12. **Reconnect and resume:** reconnect only to the same customer device. Obtain a fresh authorization signal, bind the returned window, capture a complete observation, verify the device ID and connection state, then continue from the last verified checkpoint. Do not replay committed actions.
 13. **Customer credential handoff:** call `pauseForUserInput` before the customer types a password, OTP, UAC credential, or private value. Agent input stays paused while the connected lease remains active. Call `resumeAgentControl` after handback; it captures one fresh view and remaps focus without repeating authorization when the connection and target binding stayed intact.
 
-For Codex, use `createPersistentWindowSession` from `adapters/codex/scripts/sky_fast_path.mjs`. Supply `mode`, `window`, `targetApp`, `targetTitleIncludes`, `remoteDeviceId`, `taskScope`, `success`, and an authorization signal. Wire customer stop to `emergencyStop`, out-of-band disconnect to `markDisconnected`, customer credential takeover to `pauseForUserInput`/`resumeAgentControl`, and same-device reconnection to `resumeAfterReconnect(..., { reauthorize: true })`. Add a device extractor/verifier, connection verifier, stop-signal verifier, identity cue, or target verifier when available.
+For Codex, use `createPersistentWindowSession` from `adapters/codex/scripts/sky_fast_path.mjs`. Supply `mode`, `window`, `targetApp`, `targetTitleIncludes`, `remoteDeviceId`, `taskScope`, `success`, and an authorization signal. Remote mode defaults `operationScope` to `entire-bound-device`; an explicit value may document a user-selected narrower surface. Wire customer stop to `emergencyStop`, out-of-band disconnect to `markDisconnected`, customer credential takeover to `pauseForUserInput`/`resumeAgentControl`, and same-device reconnection to `resumeAfterReconnect(..., { reauthorize: true })`. Add a device extractor/verifier, connection verifier, stop-signal verifier, identity cue, or target verifier when available.
 
 The session state is one of `connected`, `stalled`, `disconnected`, `connected-unauthorized`, `rebinding`, or `stopped`. Input requires `connected`, `authorization_status=active`, and `control_owner=agent`. During credential handoff, `control_owner=user` pauses Agent input without revoking the lease. `stopped` is latched; continue by creating a new explicitly authorized session. `disconnected` may resume after same-device verification and fresh authorization.
 

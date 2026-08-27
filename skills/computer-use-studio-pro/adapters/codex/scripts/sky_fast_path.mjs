@@ -251,6 +251,9 @@ export function createPersistentWindowSession(sky, options = {}) {
   const identityCue = String(options.remoteIdentityIncludes ?? "").trim();
   const remoteDeviceId = String(options.remoteDeviceId ?? "").trim();
   const taskScope = String(options.taskScope ?? "").trim();
+  const operationScope = String(options.operationScope
+    ?? (mode === "remote-fast-fix" ? "entire-bound-device" : "target-window")).trim()
+    || (mode === "remote-fast-fix" ? "entire-bound-device" : "target-window");
   const success = options.success;
   const targetVerifier = options.targetVerifier;
   const deviceIdExtractor = options.deviceIdExtractor;
@@ -314,6 +317,7 @@ export function createPersistentWindowSession(sky, options = {}) {
       title_includes: titleCue || null,
       remote_identity_configured: Boolean(identityCue),
       device_id_sha256_12: deviceIdHash(remoteDeviceId),
+      operation_scope: operationScope,
     };
   }
 
@@ -474,6 +478,7 @@ export function createPersistentWindowSession(sky, options = {}) {
     return {
       ...result,
       ...extra,
+      operation_scope: operationScope,
       layout_epoch: layoutEpoch,
       semantic_epoch: semanticEpoch,
       layout_changed: Boolean(changes.layoutChanged),
@@ -819,6 +824,7 @@ export function createPersistentWindowSession(sky, options = {}) {
   function snapshot(summaryOptions = {}) {
     return {
       mode,
+      operation_scope: operationScope,
       task_scope: taskScope ? compactText(taskScope, 400) : null,
       success_configured: success != null,
       success_verified: successVerified,
@@ -1261,7 +1267,9 @@ export async function selfTest() {
   const hintedView = await persistent.observe("routine");
   if (hintedView.metrics.screenshot_regions !== 1 || persistent.snapshot().pending_visual_refresh) throw new Error("explicit content-change hint missed visual refresh");
   const fingerprint = persistent.snapshot().target_fingerprint;
-  if (fingerprint.app !== "demo" || fingerprint.window_id !== 1 || fingerprint.title_includes !== "Demo") throw new Error("target fingerprint is incomplete");
+  if (fingerprint.app !== "demo" || fingerprint.window_id !== 1 || fingerprint.title_includes !== "Demo" || fingerprint.operation_scope !== "entire-bound-device") {
+    throw new Error("target fingerprint is incomplete or missed the full-device operation scope");
+  }
   const verifyView = await persistent.observe("verification");
   if (verifyView.metrics.screenshot_regions !== 1) throw new Error("verification observation missed its screenshot");
   if (persistent.noteAttempt("same-error", "same-path").pivot_required) throw new Error("retry guard pivoted too early");
