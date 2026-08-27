@@ -25,6 +25,8 @@ Estimate the route before adding machinery. For one or two ordinary actions with
 5. Verify with the cheapest reliable evidence and keep only the smallest useful output.
 6. Continue on a match; otherwise enter G3.
 
+For remote input, the execution gate also requires `session_status=connected`, `authorization_status=active`, and a matching window/device lock. Evaluate the gate before every action inside a transaction as well as before standalone input.
+
 Call the model again only for a new decision, unexpected branch, failed assertion, risk boundary, or terminal report. A generic macro without intermediate refresh and assertions is not a verified transaction.
 
 ## G3-RECOVER
@@ -40,9 +42,11 @@ Classify the failure:
 
 Use: retry once -> refresh state/geometry -> switch route -> restore checkpoint -> request user action. Run the retry guard before repeated attempts.
 
+For a remote disconnect, revoke the current authorization and retain the last verified checkpoint. Reconnect to the same device, obtain fresh authorization, capture a complete view, reconcile committed effects, and continue from the first unmet postcondition. A device switch or emergency stop latches the session in `stopped`.
+
 ## G4-CLOSE
 
-Confirm terminal evidence. Report the result, material side effects, and unresolved takeover points. Never turn an attempted action into a completed result.
+Confirm terminal evidence. For remote mode, clean and verify exact task-created nonessential artifacts on the remote side, disconnect the remote client, then clean and verify the local controller side. Report the result, material side effects, both cleanup states, and unresolved takeover points. Never turn an attempted action into a completed result.
 
 ## Low-latency observation ladder
 

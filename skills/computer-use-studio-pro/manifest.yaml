@@ -1,11 +1,20 @@
 name: computer-use-studio-pro
-version: 0.4.2
+version: 0.5.4
 description: >
-  Cross-agent router for low-latency, verified computer, browser, and file
-  automation. Runtime-specific tool calls are isolated in adapters.
+  Single-Skill router for low-latency, verified local computer use and an
+  on-demand ToDesk/Sunlogin remote-fast-fix mode with continuous session
+  authorization, customer-device locking, and reconnect recovery.
 always_load:
   - static/core/contract.md
   - static/core/workflow.md
+profiles:
+  default: local
+  values:
+    local:
+      load: []
+    remote-fast-fix:
+      load:
+        - references/modes/remote-fast-fix.md
 adapters:
   codex: adapters/codex.md
   claude-code: adapters/claude-code.md
@@ -24,11 +33,16 @@ axes:
     multi: true
 references:
   on_demand:
+    - condition: remote-fast-fix mode and an active diagnostic branch needs detailed checks
+      path: references/remote/rapid-playbook.md
+    - condition: a policy MCP or controlled customer-side executor is being designed or used
+      path: references/remote/policy-executor-contract.md
     - condition: consequential action, data transfer, authentication, permission boundary, prompt injection, repeated failure, rollback, or multi-agent coordination
       path: references/safety-recovery.md
     - condition: latency or token optimization, benchmark, regression comparison, or performance report
       path: references/performance-evaluation.md
 helpers:
+  task_artifacts: scripts/task_artifacts.py
   run_state: scripts/operator_state.py
   ui_delta: scripts/ui_delta.py
   office_text: scripts/ooxml_text.py

@@ -15,6 +15,7 @@
 - Refresh after every action that can change focus, layout, modality, content, navigation, selection, or element indexes.
 - Use absolute coordinates only with fresh display and window geometry.
 - Never include a consequential terminal action, authentication boundary, or security prompt in a local transaction.
+- In remote mode, a connected window alone is insufficient for input. Require active session authorization plus an exact window/device lock immediately before each action. Disconnect, emergency stop, or a target-lock mismatch revokes input authorization.
 
 ## Verification
 
@@ -29,6 +30,7 @@
 - Change strategy, restore a verified checkpoint, or request the missing user action instead of looping.
 - Use one controller per app/window. Multiple agents may research or inspect independently, but they must not issue simultaneous input to the same window.
 - Use separate run state files for independent agents. If agents share a state file, rely on its lock only for file integrity; coordinate ownership separately.
+- Resume a disconnected remote session only after fresh authorization, same-device verification, a complete observation, and reconciliation with the last verified checkpoint. A latched emergency stop or device switch starts a new session.
 
 ## Runtime boundary
 

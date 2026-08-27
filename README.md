@@ -47,6 +47,9 @@
 
 | 功能 | 作用 |
 | --- | --- |
+| 单 Skill 双模式 | 默认 `local` 操作本机；`remote-fast-fix` 按需加载 ToDesk/向日葵远程维修规则，共用同一执行器。 |
+| 持续授权与设备锁 | 远程会话绑定窗口和客户设备 ID；断线、客户急停或设备变化时撤销输入授权。 |
+| 断线续跑 | 同设备重新连接并获得新授权后，完整重映射并从最后验证检查点继续。 |
 | 快速路径 | 对低风险、可撤销且有明确终态的连续步骤，减少不必要的模型往返。 |
 | UI 恢复 | 处理焦点丢失、加载动画、弹窗、坐标失效与多显示器/DPI 变化；失败后先分类，再换策略。 |
 | 语义优先 | 优先 API、文件结构、DOM、无障碍树、快捷键与直接赋值，最后才使用 OCR 或像素坐标。 |
@@ -57,24 +60,33 @@
 
 ## 4. 快速开始
 
-安装后直接向 Agent 描述任务，或使用下面的提示词：
+只安装并调用 `computer-use-studio-pro`。它提供两个互斥模式：`local` 为默认本机模式；任务明确指向 ToDesk/向日葵远程窗口时选择 `remote-fast-fix`，远程规则按需加载。
+
+### 本机模式
 
 ```text
-使用 computer-use-studio-pro 完成：<你的目标>。
-先选择最低延迟且安全的路线；每一步验证结果；
-遇到登录、验证码、发送、删除、覆盖、付款、上传、共享或权限变更时停止并告诉我。
+使用 $computer-use-studio-pro，模式 local。
+任务：<本机目标>。
+成功标志：<可观察结果>。
 ```
 
-对于跨应用或较长任务，可追加：
+### 远程维修模式
 
 ```text
-保存可恢复的检查点；同一种失败不要无限重试；
-若无法确认结果是否生效，标记为“未知”并请求判断。
+使用 $computer-use-studio-pro，模式 remote-fast-fix。
+目标窗口：当前前台的 ToDesk；客户设备ID：<TO_DESK_DEVICE_ID>；任务：<远程目标>；
+持续授权：本次连接有效，客户断开或点击急停后失效；
+授权范围：<允许范围>；成功标志：<远程电脑上的可见结果>；
+清理模式：task-generated-nonessential；先验证并清理远程端再断开，随后清理并验证本机端生成的临时、重复和失败尝试文件。
 ```
+
+远程模式只创建一个持久化 Computer Use / `@oai/sky` 会话，并复用同一个远程窗口句柄。每次输入前检查持续授权、连接状态、急停信号以及客户设备 ID。断线后冻结输入；重新连接同一设备并取得新授权后，完整观察并从最后验证检查点继续。设备切换或客户急停会锁定停止状态。首次完整观察，之后优先语义状态或局部观察；同一稳定页面可连续执行一至三个逐步验证的可撤销动作。
 
 ## 5. 安装方式
 
-安装时必须保留完整的 `skills/computer-use-studio-pro/` 文件夹；不能只复制 `SKILL.md`，因为 `static/`、`references/`、`scripts/` 与 `adapters/` 会被按需读取。下面命令中的仓库地址为 `666xiaoniuzi/computer-use-skill`。
+安装时必须保留完整的 `skills/computer-use-studio-pro/` 文件夹；单独复制 `SKILL.md` 会遗漏按需加载的 `static/`、`references/`、`scripts/` 与 `adapters/`。下面命令中的仓库地址为 `666xiaoniuzi/computer-use-skill`。
+
+发布脚本 `tools/build_release.py` 会生成两个确定性压缩包：源码包排除 `.git`、缓存和临时文件；安装包只包含 `computer-use-studio-pro/`，并将 `SKILL.md` 放在该目录的第一层。同时生成 `SHA256SUMS` 文件。
 
 ### 5.1 让 Agent 自行下载
 
@@ -161,8 +173,9 @@ openclaw skills install ./skills/computer-use-studio-pro
 │     ├─ adapters/                 # 各 Agent 的专用适配层
 │     ├─ static/                   # 核心契约、工作流与平台片段
 │     ├─ scripts/                  # 共享状态、UI 差异、Office 工具
-│     ├─ references/               # 安全恢复与性能评测说明
+│     ├─ references/               # 本机/远程模式、安全恢复与性能评测说明
 │     └─ agents/                   # 可选宿主元数据
+├─ tools/build_release.py          # 可重复的源码包/安装包构建器
 ├─ LICENSE
 ├─ SECURITY.md
 ├─ CONTRIBUTING.md

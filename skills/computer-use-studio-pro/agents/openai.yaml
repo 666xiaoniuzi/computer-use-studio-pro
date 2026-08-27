@@ -1,4 +1,4 @@
 interface:
   display_name: "Computer Use Studio Pro"
-  short_description: "Locally verified, low-latency computer control"
-  default_prompt: "Use $computer-use-studio-pro to take the fastest safe route, keep straight-line reversible work local, and return compact verified results."
+  short_description: "单 Skill：本机控制与低延迟远程维修"
+  default_prompt: "使用 $computer-use-studio-pro；远程模式先记录客户设备ID并建立持续授权，只操作绑定的ToDesk/向日葵窗口与设备；客户断开、急停或设备ID变化时立即停止输入。重连后重新授权并校验同一设备，再从最后验证检查点继续。任务结束时依次验证结果、清理远程端、断开远程、清理本机端并复核。"

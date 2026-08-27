@@ -12,18 +12,22 @@ from typing import Any
 
 FIELDS = ("role", "control_type", "name", "label", "description", "value", "enabled", "visible", "selected", "checked", "focused", "bounds", "rect")
 IDENTITY = ("automation_id", "automationId", "selector", "path", "id")
-SENSITIVE_ROLES = ("password", "secure text", "protected")
-SECRET = re.compile(r"(?i)\b(password|passwd|secret|token|cookie|authorization|api[_-]?key|otp)\b\s*[:=]\s*\S+")
+SENSITIVE_ROLES = ("password", "secure text", "protected", "密码", "口令", "密钥")
+SECRET = re.compile(r"(?i)(?:\b(password|passwd|secret|token|cookie|authorization|api[_-]?key|otp)\b|(密码|口令|令牌|密钥|验证码))\s*[:=：]\s*\S+")
 BEARER = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}\b")
 PREFIX_SECRET = re.compile(r"\b(?:sk|ghp|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{8,}\b")
+JWT_SECRET = re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")
+AWS_ACCESS_KEY = re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b")
 EMAIL = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
 PHONE = re.compile(r"(?<!\d)(?:\+?\d[\d -]{7,}\d)(?!\d)")
 
 
 def clean_text(value: str, max_text: int) -> str:
-    value = SECRET.sub(lambda match: match.group(1) + "=[REDACTED]", value)
+    value = SECRET.sub(lambda match: (match.group(1) or match.group(2)) + "=[REDACTED]", value)
     value = BEARER.sub("Bearer [REDACTED]", value)
     value = PREFIX_SECRET.sub("[REDACTED]", value)
+    value = JWT_SECRET.sub("[REDACTED_JWT]", value)
+    value = AWS_ACCESS_KEY.sub("[REDACTED_AWS_KEY]", value)
     value = EMAIL.sub("[REDACTED_EMAIL]", value)
     value = PHONE.sub("[REDACTED_PHONE]", value)
     return value if len(value) <= max_text else value[: max_text - 1] + "…"

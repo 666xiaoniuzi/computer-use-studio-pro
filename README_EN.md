@@ -47,6 +47,9 @@ Cross-agent support means that the workflow and adapters are portable. It does n
 
 | Feature | What it does |
 | --- | --- |
+| One Skill, two modes | Defaults to `local`; loads `remote-fast-fix` for ToDesk/Sunlogin tasks while sharing the same executor. |
+| Continuous authorization and device lock | Binds the remote window and customer device ID; disconnect, customer stop, or device change revokes input authorization. |
+| Reconnect and resume | After same-device reconnection and fresh authorization, remaps the full view and continues from the last verified checkpoint. |
 | Fast paths | Reduces unnecessary model roundtrips for deterministic, low-risk, reversible steps. |
 | UI recovery | Handles focus loss, loading, modals, stale coordinates, DPI, and multi-monitor changes. |
 | Semantic first | Prefers APIs, file structures, DOM, accessibility, shortcuts, and direct values before OCR or coordinates. |
@@ -57,23 +60,32 @@ Cross-agent support means that the workflow and adapters are portable. It does n
 
 ## 4. Quick Start
 
-```text
-Use computer-use-studio-pro to complete: <your goal>.
-Choose the lowest-latency safe route first; verify every result.
-Stop and tell me before login, CAPTCHA, sending, deletion, overwrite,
-payment, upload, sharing, or permission changes.
-```
+Install and invoke only `computer-use-studio-pro`. It has two mutually exclusive modes: `local` is the default; `remote-fast-fix` is selected when the task explicitly targets a ToDesk or Sunlogin remote window, and its detailed rules are loaded on demand.
 
-For long or cross-application tasks, add:
+### Local mode
 
 ```text
-Save recoverable checkpoints; do not retry the same failure indefinitely.
-If a result cannot be verified, mark it as unknown and ask for guidance.
+Use $computer-use-studio-pro in local mode.
+Task: <local goal>. Success evidence: <observable result>.
 ```
+
+### Remote repair mode
+
+```text
+Use $computer-use-studio-pro in remote-fast-fix mode.
+Target window: the current foreground ToDesk window; customer device ID: <TO_DESK_DEVICE_ID>; task: <remote goal>;
+continuous authorization: valid for this connected session and revoked on customer disconnect or emergency stop;
+scope: <allowed changes>; success evidence: <visible result on the remote PC>;
+cleanup: task-generated-nonessential; verify remote cleanup before disconnect, then verify local-controller cleanup.
+```
+
+Remote mode creates one persistent Computer Use / `@oai/sky` session and reuses one remote-window lease. Before every input it checks continuous authorization, connection state, the stop signal, and the exact customer device ID. A disconnect freezes input. After reconnecting the same device and receiving fresh authorization, it takes a complete observation and resumes from the last verified checkpoint. A device switch or customer emergency stop latches the session in a stopped state. It takes one complete initial observation, then prefers semantic state or a current crop. One stable page may execute one to three reversible actions with a refresh and assertion after each action.
 
 ## 5. Installation
 
-Keep the whole `skills/computer-use-studio-pro/` directory. Do not copy only `SKILL.md`: `static/`, `references/`, `scripts/`, and `adapters/` are loaded as needed. The repository address in the commands below is `666xiaoniuzi/computer-use-skill`.
+Keep the whole `skills/computer-use-studio-pro/` directory. Copying only `SKILL.md` omits the on-demand `static/`, `references/`, `scripts/`, and `adapters/` resources. The repository address in the commands below is `666xiaoniuzi/computer-use-skill`.
+
+`tools/build_release.py` creates two deterministic archives: a source bundle that excludes `.git`, caches, and temporary files, plus an install bundle containing only the top-level `computer-use-studio-pro/` skill directory. It also writes a SHA256SUMS file.
 
 ### 5.1 Let an Agent Install It
 
@@ -154,8 +166,9 @@ Open a new session and map the workflow to the browser, desktop, accessibility, 
 │     ├─ adapters/                 # Per-agent adapters
 │     ├─ static/                   # Core contract, workflow, surface fragments
 │     ├─ scripts/                  # Shared state, UI delta, Office helpers
-│     ├─ references/               # Safety/recovery and evaluation notes
+│     ├─ references/               # Local/remote modes, safety/recovery, evaluation
 │     └─ agents/                   # Optional host metadata
+├─ tools/build_release.py          # Reproducible source/install ZIP builder
 ├─ LICENSE
 ├─ SECURITY.md
 ├─ CONTRIBUTING.md

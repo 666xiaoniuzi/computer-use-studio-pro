@@ -17,11 +17,13 @@ from pathlib import Path
 SCHEMA = 3
 STAGES = {"G0-CONTRACT", "G1-MAP", "G2-EXECUTE-VERIFY", "G3-RECOVER", "G4-CLOSE"}
 ASSIGNMENT_SECRET = re.compile(
-    r"(?i)\b(password|passwd|secret|token|cookie|authorization|api[_-]?key|otp|one[- ]?time code)\b"
-    r"\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
+    r"(?i)(?:\b(password|passwd|secret|token|cookie|authorization|api[_-]?key|otp|one[- ]?time code)\b|(密码|口令|令牌|密钥|验证码))"
+    r"\s*[:=：]\s*(?:\"[^\"]*\"|'[^']*'|[^\s,;，；]+)"
 )
 BEARER_SECRET = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}")
 PREFIX_SECRET = re.compile(r"\b(?:sk|ghp|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{8,}\b")
+JWT_SECRET = re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")
+AWS_ACCESS_KEY = re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b")
 EMAIL = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
 PHONE = re.compile(r"(?<!\d)(?:\+?\d[\d -]{7,}\d)(?!\d)")
 MAX_STORED_CHARS = 2_000
@@ -32,9 +34,11 @@ def now() -> str:
 
 
 def scrub(value: str) -> str:
-    value = ASSIGNMENT_SECRET.sub(lambda match: match.group(1) + "=[REDACTED]", value)
+    value = ASSIGNMENT_SECRET.sub(lambda match: (match.group(1) or match.group(2)) + "=[REDACTED]", value)
     value = BEARER_SECRET.sub("Bearer [REDACTED]", value)
     value = PREFIX_SECRET.sub("[REDACTED]", value)
+    value = JWT_SECRET.sub("[REDACTED_JWT]", value)
+    value = AWS_ACCESS_KEY.sub("[REDACTED_AWS_KEY]", value)
     value = EMAIL.sub("[REDACTED_EMAIL]", value)
     value = PHONE.sub("[REDACTED_PHONE]", value)
     return value if len(value) <= MAX_STORED_CHARS else value[: MAX_STORED_CHARS - 1] + "…"
