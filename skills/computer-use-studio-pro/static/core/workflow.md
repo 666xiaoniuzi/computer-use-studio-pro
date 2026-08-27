@@ -25,7 +25,7 @@ Estimate the route before adding machinery. For one or two ordinary actions with
 5. Verify with the cheapest reliable evidence and keep only the smallest useful output.
 6. Continue on a match; otherwise enter G3.
 
-For remote input, the execution gate also requires `session_status=connected`, `authorization_status=active`, and a matching window/device lock. Evaluate the gate before every action inside a transaction as well as before standalone input.
+For remote input, the execution gate also requires cached `session_status=connected`, `authorization_status=active`, `control_owner=agent`, and no latched target-lock event. Read this local gate before every action inside a transaction and before standalone input. Evaluate live connection/device/stop signals at observation and explicit event boundaries instead of adding a remote verification roundtrip to each keyboard or pointer action.
 
 Call the model again only for a new decision, unexpected branch, failed assertion, risk boundary, or terminal report. A generic macro without intermediate refresh and assertions is not a verified transaction.
 
@@ -43,6 +43,8 @@ Classify the failure:
 Use: retry once -> refresh state/geometry -> switch route -> restore checkpoint -> request user action. Run the retry guard before repeated attempts.
 
 For a remote disconnect, revoke the current authorization and retain the last verified checkpoint. Reconnect to the same device, obtain fresh authorization, capture a complete view, reconcile committed effects, and continue from the first unmet postcondition. A device switch or emergency stop latches the session in `stopped`.
+
+For a password, OTP, UAC credential, or other customer-entered value, pause Agent input while retaining the connected authorization lease. On handback, capture one fresh observation, remap focus, and continue under the same lease when no disconnect or target-lock event occurred.
 
 ## G4-CLOSE
 

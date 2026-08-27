@@ -1,9 +1,9 @@
 name: computer-use-studio-pro
-version: 0.5.4
+version: 0.5.5
 description: >
   Single-Skill router for low-latency, verified local computer use and an
-  on-demand ToDesk/Sunlogin remote-fast-fix mode with continuous session
-  authorization, customer-device locking, and reconnect recovery.
+  on-demand ToDesk/Sunlogin remote-fast-fix mode with a cached connected-session
+  authorization lease, customer-device locking, credential handoff, and reconnect recovery.
 always_load:
   - static/core/contract.md
   - static/core/workflow.md

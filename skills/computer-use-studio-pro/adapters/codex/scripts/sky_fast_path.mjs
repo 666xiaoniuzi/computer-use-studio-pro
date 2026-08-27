@@ -297,6 +297,8 @@ export function createPersistentWindowSession(sky, options = {}) {
   let pendingVisualRefresh = false;
   let authorizationStatus = mode === "local" ? "not-required" : "pending";
   let sessionStatus = mode === "local" ? "initializing" : "pending-authorization";
+  let controlOwner = mode === "local" ? "agent" : "pending";
+  let lastControlHandoff = null;
   let stopLatched = false;
   let emergencyStopped = false;
   let stopReason = "";
@@ -326,6 +328,7 @@ export function createPersistentWindowSession(sky, options = {}) {
     stopReason = compactText(reason, 240);
     if (revoke && mode === "remote-fast-fix") {
       authorizationStatus = "revoked";
+      controlOwner = "none";
       successVerified = false;
       successEpoch = null;
     }
@@ -392,6 +395,7 @@ export function createPersistentWindowSession(sky, options = {}) {
         throw new Error("Remote session authorization is not active");
       }
       authorizationStatus = "active";
+      controlOwner = "agent";
     }
   }
 
@@ -438,12 +442,12 @@ export function createPersistentWindowSession(sky, options = {}) {
     return { layoutChanged, semanticChanged };
   }
 
-  function assertInputAllowed(currentState = state) {
+  function assertInputAllowed() {
     if (mode !== "remote-fast-fix") return true;
     if (stopLatched || emergencyStopped) throw new Error("Remote input is stopped");
     if (authorizationStatus !== "active") throw new Error("Remote input authorization is inactive");
     if (sessionStatus !== "connected") throw new Error(`Remote input is frozen while session status is ${sessionStatus}`);
-    validateRemoteState(currentState);
+    if (controlOwner !== "agent") throw new Error("Remote input is paused for user control");
     return true;
   }
 
@@ -476,7 +480,9 @@ export function createPersistentWindowSession(sky, options = {}) {
       semantic_changed: Boolean(changes.semanticChanged),
       target_fingerprint: targetFingerprint(),
       authorization_status: authorizationStatus,
+      authorization_check_mode: mode === "remote-fast-fix" ? "session-lease" : "not-required",
       session_status: sessionStatus,
+      control_owner: controlOwner,
       emergency_stopped: emergencyStopped,
       success_verified: successVerified,
     };
@@ -669,6 +675,39 @@ export function createPersistentWindowSession(sky, options = {}) {
     return snapshot();
   }
 
+  function pauseForUserInput(reason = "user-credential-entry") {
+    if (mode !== "remote-fast-fix") throw new Error("pauseForUserInput applies only to remote-fast-fix sessions");
+    assertInputAllowed();
+    controlOwner = "user";
+    lastControlHandoff = {
+      reason: compactText(reason, 240),
+      paused_at: new Date().toISOString(),
+      resumed_at: null,
+    };
+    return snapshot();
+  }
+
+  async function resumeAgentControl(observeOptions = {}) {
+    if (mode !== "remote-fast-fix") throw new Error("resumeAgentControl applies only to remote-fast-fix sessions");
+    if (stopLatched || emergencyStopped) throw new Error("Remote session is stopped");
+    if (authorizationStatus !== "active" || sessionStatus !== "connected") {
+      throw new Error("The connected authorization lease is not active");
+    }
+    if (controlOwner !== "user") throw new Error("Remote control is not paused for user input");
+    const result = await observe("user-handoff-return", {
+      ...observeOptions,
+      include_screenshot: observeOptions.include_screenshot ?? true,
+    });
+    controlOwner = "agent";
+    if (lastControlHandoff) lastControlHandoff.resumed_at = new Date().toISOString();
+    return {
+      ...result,
+      authorization_check_mode: "session-lease",
+      control_owner: controlOwner,
+      user_handoff_resumed: true,
+    };
+  }
+
   async function resumeAfterReconnect(nextWindow, recoveryOptions = {}) {
     if (mode !== "remote-fast-fix") throw new Error("resumeAfterReconnect applies only to remote-fast-fix sessions");
     if (stopLatched || emergencyStopped) throw new Error("A stopped remote session requires a new authorization session");
@@ -680,6 +719,7 @@ export function createPersistentWindowSession(sky, options = {}) {
     }
     transition("rebinding", "reconnect-in-progress");
     authorizationStatus = "pending";
+    controlOwner = "none";
     window = nextWindow;
     state = null;
     initialized = false;
@@ -788,11 +828,14 @@ export function createPersistentWindowSession(sky, options = {}) {
       semantic_epoch: semanticEpoch,
       pending_visual_refresh: pendingVisualRefresh,
       authorization_status: authorizationStatus,
+      authorization_check_mode: mode === "remote-fast-fix" ? "session-lease" : "not-required",
       session_status: sessionStatus,
+      control_owner: controlOwner,
       emergency_stopped: emergencyStopped,
       stop_reason: stopReason || null,
       recovery_required: ["stalled", "disconnected", "connected-unauthorized", "rebinding"].includes(sessionStatus),
       last_verified_checkpoint: lastVerifiedCheckpoint,
+      last_control_handoff: lastControlHandoff,
       summary: state ? compactState(state, summaryOptions) : null,
     };
   }
@@ -808,6 +851,8 @@ export function createPersistentWindowSession(sky, options = {}) {
     markContentChanged,
     markDisconnected,
     emergencyStop,
+    pauseForUserInput,
+    resumeAgentControl,
     resumeAfterReconnect,
     rebind,
     waitUntil,
@@ -1243,6 +1288,53 @@ export async function selfTest() {
   const terminal = await persistent.verifySuccess({ screenshotOnSemanticChange: false });
   if (!terminal.ok || !terminal.success_verified || !persistent.snapshot().success_verified) {
     throw new Error("configured terminal success was not enforced");
+  }
+
+  const leaseChecks = { authorization: 0, connection: 0, device: 0, stop: 0 };
+  let leaseChecksAtInput = null;
+  const leasedSky = {
+    ...mockSky,
+    async type_text(input) {
+      leaseChecksAtInput = { ...leaseChecks };
+      return mockSky.type_text(input);
+    },
+  };
+  const leased = createPersistentWindowSession(leasedSky, {
+    mode: "remote-fast-fix", window, targetApp: "demo", targetTitleIncludes: "Demo",
+    remoteDeviceId, taskScope: "credential handoff", success: "done",
+    authorizationVerifier() { leaseChecks.authorization += 1; return true; },
+    connectionVerifier() { leaseChecks.connection += 1; return true; },
+    deviceVerifier() { leaseChecks.device += 1; return true; },
+    stopSignalVerifier() { leaseChecks.stop += 1; return false; },
+    screenshotOnSemanticChange: false,
+  });
+  const leasedInitial = await leased.initialObserve();
+  if (leasedInitial.authorization_check_mode !== "session-lease" || leasedInitial.control_owner !== "agent") {
+    throw new Error("remote authorization lease was not activated");
+  }
+  const beforeCachedGates = JSON.stringify(leaseChecks);
+  for (let index = 0; index < 5; index += 1) leased.assertInputAllowed();
+  if (JSON.stringify(leaseChecks) !== beforeCachedGates) {
+    throw new Error("cached input gates called remote verifiers per input");
+  }
+  const pausedForUser = leased.pauseForUserInput("user-types-password");
+  if (pausedForUser.authorization_status !== "active" || pausedForUser.control_owner !== "user") {
+    throw new Error("user credential handoff revoked the connected authorization lease");
+  }
+  let agentInputDuringHandoffRejected = false;
+  try { leased.assertInputAllowed(); } catch { agentInputDuringHandoffRejected = true; }
+  if (!agentInputDuringHandoffRejected) throw new Error("agent input remained active during user handoff");
+  const resumedControl = await leased.resumeAgentControl({ screenshotOnSemanticChange: false });
+  if (resumedControl.control_owner !== "agent" || resumedControl.authorization_status !== "active" || leaseChecks.authorization !== 1) {
+    throw new Error("user handoff return re-ran authorization or failed to resume agent control");
+  }
+  const checksBeforeInput = { ...leaseChecks };
+  await leased.act(
+    { method: "type_text", args: { text: "lease-action" } },
+    { expect: { includes: "lease-action" }, screenshotOnSemanticChange: false },
+  );
+  if (JSON.stringify(leaseChecksAtInput) !== JSON.stringify(checksBeforeInput) || leaseChecks.authorization !== 1) {
+    throw new Error("remote verifiers ran immediately before a leased input action");
   }
 
   let observedDeviceId = remoteDeviceId;

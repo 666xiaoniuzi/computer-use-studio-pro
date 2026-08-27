@@ -48,7 +48,8 @@ Cross-agent support means that the workflow and adapters are portable. It does n
 | Feature | What it does |
 | --- | --- |
 | One Skill, two modes | Defaults to `local`; loads `remote-fast-fix` for ToDesk/Sunlogin tasks while sharing the same executor. |
-| Continuous authorization and device lock | Binds the remote window and customer device ID; disconnect, customer stop, or device change revokes input authorization. |
+| Session authorization lease and device lock | Confirms once at connection setup and reuses the lease; disconnect, customer stop, or device change revokes input authorization. |
+| Customer credential handoff | Pauses Agent input while retaining the lease; refreshes once and resumes after the customer finishes. |
 | Reconnect and resume | After same-device reconnection and fresh authorization, remaps the full view and continues from the last verified checkpoint. |
 | Fast paths | Reduces unnecessary model roundtrips for deterministic, low-risk, reversible steps. |
 | UI recovery | Handles focus loss, loading, modals, stale coordinates, DPI, and multi-monitor changes. |
@@ -74,12 +75,12 @@ Task: <local goal>. Success evidence: <observable result>.
 ```text
 Use $computer-use-studio-pro in remote-fast-fix mode.
 Target window: the current foreground ToDesk window; customer device ID: <TO_DESK_DEVICE_ID>; task: <remote goal>;
-continuous authorization: valid for this connected session and revoked on customer disconnect or emergency stop;
+continuous authorization lease: confirmed once and reused for this uninterrupted connection; revoked on customer disconnect or emergency stop;
 scope: <allowed changes>; success evidence: <visible result on the remote PC>;
 cleanup: task-generated-nonessential; verify remote cleanup before disconnect, then verify local-controller cleanup.
 ```
 
-Remote mode creates one persistent Computer Use / `@oai/sky` session and reuses one remote-window lease. Before every input it checks continuous authorization, connection state, the stop signal, and the exact customer device ID. A disconnect freezes input. After reconnecting the same device and receiving fresh authorization, it takes a complete observation and resumes from the last verified checkpoint. A device switch or customer emergency stop latches the session in a stopped state. It takes one complete initial observation, then prefers semantic state or a current crop. One stable page may execute one to three reversible actions with a refresh and assertion after each action.
+Remote mode creates one persistent Computer Use / `@oai/sky` session and reuses one remote-window lease. After connection and device-lock validation, it activates one authorization lease. Before each input it reads only cached in-process session state, adding no authorization, connection, device, or stop-verifier roundtrip. Live remote signals are evaluated at observation, client-event, and reconnect boundaries. For a customer-entered password, OTP, or UAC credential, Agent input pauses while the lease stays active; one fresh observation and focus remap resumes control. A disconnect freezes input. After reconnecting the same device and receiving fresh authorization, it takes a complete observation and resumes from the last verified checkpoint.
 
 ## 5. Installation
 
