@@ -1,6 +1,6 @@
 ---
 name: computer-use-studio-pro
-description: Mandatory low-latency orchestration for every Computer Use or @oai/sky task, with a default local mode and an on-demand remote-fast-fix mode for ToDesk or Sunlogin; use for desktop, browser, file, Office, and remote GUI tasks.
+description: Automatically load this low-latency orchestration when the user asks to operate or control the local computer, click or type in visible apps, use Computer Use or @oai/sky, or remotely control or repair a computer through ToDesk, Sunlogin, or another remote desktop client; defaults to local and selects remote-fast-fix for remote GUI tasks.
 ---
 
 # Computer Use Studio Pro
@@ -13,6 +13,15 @@ Load and follow this Skill whenever either condition is true:
 
 - the user explicitly invokes `$computer-use-studio-pro`; or
 - the selected execution route will call Computer Use, `@oai/sky`, or another host GUI controller.
+
+Explicit `$computer-use-studio-pro` syntax is optional. Infer invocation from the user's requested action, including natural-language phrases such as:
+
+- 操控本机、控制电脑、操作桌面、帮我点击/输入/拖动/打开某个可见应用；
+- 使用 Computer Use、电脑操作、界面操作、GUI 操作；
+- 远程操控、远程维修、控制客户电脑、连接 ToDesk/向日葵/远程桌面；
+- equivalent English requests such as control this PC, operate the desktop, use the GUI, or remote into another computer.
+
+Match intent rather than requiring an exact phrase. Select `local` when the requested target is the host computer. Select `remote-fast-fix` when the requested target is another computer through a visible remote client. Infer the remote operating system from the initial complete observation when the user does not state it. Do not activate this Skill for advice-only discussion or file/API work that will not issue GUI input.
 
 The host's bundled Computer Use Skill or API documentation supplies tool syntax; it does not replace this orchestration layer. Use one combined chain, never two planners or two input drivers:
 

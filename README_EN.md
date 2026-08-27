@@ -64,6 +64,8 @@ Cross-agent support means that the workflow and adapters are portable. It does n
 
 Install and invoke only `computer-use-studio-pro`. It has two mutually exclusive modes: `local` is the default; `remote-fast-fix` is selected when the task explicitly targets a ToDesk or Sunlogin remote window, and its detailed rules are loaded on demand.
 
+Writing `$computer-use-studio-pro` explicitly is optional. Natural-language requests to control the local computer, operate a visible application, use Computer Use, or control another computer through ToDesk, Sunlogin, or another remote desktop client automatically invoke this Skill and route to `local` or `remote-fast-fix`. When the remote OS is omitted, the initial complete observation identifies it.
+
 Whenever a task actually uses Computer Use or `@oai/sky`, load this Skill first, then read the host Computer Use API guidance, and import `adapters/codex/scripts/sky_fast_path.mjs` into the same persistent runtime. Ordinary low-risk reversible work in an explicit task uses one task-wide authorization, one window binding, and compact observations. Add model roundtrips only for new decisions, unexpected branches, risk boundaries, or terminal verification. Runtime execution uses the installed local bundle rather than re-downloading GitHub for every task.
 
 ### Local mode

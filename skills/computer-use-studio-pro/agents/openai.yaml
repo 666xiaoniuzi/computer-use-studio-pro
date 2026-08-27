@@ -1,4 +1,6 @@
 interface:
   display_name: "Computer Use Studio Pro"
-  short_description: "每次 Computer Use 自动加载的低延迟控制层"
-  default_prompt: "凡是使用 Computer Use 或 @oai/sky，先加载 $computer-use-studio-pro，并在同一持久 node_repl 中导入 sky_fast_path.mjs；普通低风险可逆操作在明确任务范围内采用持续授权，不逐次询问，复用同一运行时和窗口绑定，以紧凑观察、逐步断言和关键节点截图完成验证。local 模式以任务涉及的本机整台电脑为操作面；remote-fast-fix 模式绑定客户设备整机、设备ID和持续会话租约，断线、急停或设备变化时停止输入并按检查点恢复。"
+  short_description: "根据本机或远程操控意图自动触发的低延迟电脑控制与验证层"
+  default_prompt: "使用 $computer-use-studio-pro 自动判断 local 或 remote-fast-fix 模式，以持久运行时、sky_fast_path.mjs、窗口绑定和紧凑验证完成本机或远程电脑操作。"
+policy:
+  allow_implicit_invocation: true
