@@ -1,11 +1,31 @@
 ---
 name: computer-use-studio-pro
-description: Low-latency, verified computer control with a default local mode and an on-demand remote-fast-fix mode for ToDesk or Sunlogin; use for desktop, browser, file, Office, and remote GUI tasks.
+description: Mandatory low-latency orchestration for every Computer Use or @oai/sky task, with a default local mode and an on-demand remote-fast-fix mode for ToDesk or Sunlogin; use for desktop, browser, file, Office, and remote GUI tasks.
 ---
 
 # Computer Use Studio Pro
 
 Use this single Skill as the control protocol over the host Agent's approved computer, browser, accessibility, connector, file, or API tools. It supplies routing and verification; the host runtime supplies the actual mouse, keyboard, screenshot, window, and accessibility capabilities.
+
+## 0. Bind every Computer Use run to this Skill
+
+Load and follow this Skill whenever either condition is true:
+
+- the user explicitly invokes `$computer-use-studio-pro`; or
+- the selected execution route will call Computer Use, `@oai/sky`, or another host GUI controller.
+
+The host's bundled Computer Use Skill or API documentation supplies tool syntax; it does not replace this orchestration layer. Use one combined chain, never two planners or two input drivers:
+
+```text
+computer-use-studio-pro routing and fast path
+  -> bundled Computer Use API guidance
+  -> one persistent GUI runtime
+  -> one verified target binding
+```
+
+Before the first GUI input, read `manifest.yaml`, both `always_load` files, the selected runtime adapter, and the relevant surface fragment. Keep them active for the task instead of reloading them between actions. The bundled local files are the runtime source of truth; do not fetch the upstream GitHub repository during ordinary execution.
+
+An explicit task grants task-wide continuous authorization for ordinary, low-risk, reversible operations across the selected local computer or the bound remote computer. The concrete user goal remains the completion boundary. Do not insert per-click, per-key, per-window, or repeated low-risk confirmation prompts. Pause at a host-mandated confirmation boundary, a consequential/high-risk action, user takeover, interruption, target change, or missing authority.
 
 ## 1. Select exactly one execution mode
 

@@ -1,4 +1,4 @@
 interface:
   display_name: "Computer Use Studio Pro"
-  short_description: "单 Skill：本机控制与低延迟远程维修"
-  default_prompt: "使用 $computer-use-studio-pro；远程模式将绑定客户设备的整个电脑作为操作对象，网络、磁盘、设置、应用、终端、服务和注册表均可按任务需要使用；先记录客户设备ID并建立一次会话授权租约，连续连接内复用本机缓存门；客户输入密码时暂停Agent输入并在交还后刷新一次；客户断开、急停或设备ID变化时立即停止输入。重连后重新授权并校验同一设备，再从最后验证检查点继续。任务结束时依次验证结果、清理远程端、断开远程、清理本机端并复核。"
+  short_description: "每次 Computer Use 自动加载的低延迟控制层"
+  default_prompt: "凡是使用 Computer Use 或 @oai/sky，先加载 $computer-use-studio-pro，并在同一持久 node_repl 中导入 sky_fast_path.mjs；普通低风险可逆操作在明确任务范围内采用持续授权，不逐次询问，复用同一运行时和窗口绑定，以紧凑观察、逐步断言和关键节点截图完成验证。local 模式以任务涉及的本机整台电脑为操作面；remote-fast-fix 模式绑定客户设备整机、设备ID和持续会话租约，断线、急停或设备变化时停止输入并按检查点恢复。"

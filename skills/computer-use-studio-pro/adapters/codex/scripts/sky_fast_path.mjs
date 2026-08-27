@@ -1436,7 +1436,9 @@ export async function selfTest() {
 }
 
 function isCliEntryPoint() {
-  if (!process.argv[1]) return false;
+  // `process` is intentionally absent in Codex's persistent node_repl. Keep
+  // the module importable there while retaining the standalone CLI self-test.
+  if (typeof process === "undefined" || !process.argv?.[1]) return false;
   try {
     return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
   } catch {

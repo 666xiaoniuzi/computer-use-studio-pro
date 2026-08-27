@@ -64,6 +64,8 @@
 
 只安装并调用 `computer-use-studio-pro`。它提供两个互斥模式：`local` 为默认本机模式；任务明确指向 ToDesk/向日葵远程窗口时选择 `remote-fast-fix`，远程规则按需加载。
 
+只要任务实际使用 Computer Use 或 `@oai/sky`，就先加载本 Skill，再读取宿主 Computer Use 的 API 说明，并在同一个持久运行时中导入 `adapters/codex/scripts/sky_fast_path.mjs`。显式任务中的普通低风险可逆操作采用任务级持续授权，复用同一个窗口绑定和紧凑观察；只有新决策、异常分支、风险边界或最终验证才增加模型往返。运行时使用本地安装文件，不为每次任务重新下载 GitHub 仓库。
+
 ### 本机模式
 
 ```text

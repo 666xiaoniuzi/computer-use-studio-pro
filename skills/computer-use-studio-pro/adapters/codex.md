@@ -4,6 +4,33 @@ Use the Codex-approved computer, browser, connector, and file tools only. Read t
 
 On the supported Windows Computer Use runtime, `scripts/sky_fast_path.mjs` is available at `adapters/codex/scripts/sky_fast_path.mjs`. It wraps the approved persistent `sky` object; it is not a second input driver.
 
+## Mandatory Computer Use startup
+
+Whenever the task will issue Windows Computer Use input, load this adapter and import `sky_fast_path.mjs` before the first input. Loading only the bundled Computer Use API instructions is incomplete. Initialize one `@oai/sky` object and one fast-path module in the same persistent `node_repl` kernel, then reuse both for the entire task:
+
+```js
+if (!globalThis.sky) {
+  const { sky } = await import("@oai/sky");
+  globalThis.sky = sky;
+}
+if (!globalThis.cusproFastPath) {
+  const path = await import("node:path");
+  const os = await import("node:os");
+  const { pathToFileURL } = await import("node:url");
+  const homeDir = nodeRepl.homeDir || os.homedir();
+  const modulePath = path.join(
+    homeDir,
+    ".codex", "skills", "computer-use-studio-pro",
+    "adapters", "codex", "scripts", "sky_fast_path.mjs",
+  );
+  globalThis.cusproFastPath = await import(pathToFileURL(modulePath).href);
+}
+```
+
+Use the actual loaded Skill directory instead when Codex is configured with a non-default Skill root. Prefer `launchAndAwaitReady`, `observeCompact`, `actAndRefresh`, `runVerifiedTransaction`, `fillEditable`, and `createPersistentWindowSession` over repeated raw action/observation cells. Use raw `sky` calls only for a capability the helper does not wrap or for bounded recovery, and still preserve the same persistent runtime, target lease, compact observation, explicit postcondition, and immediate refresh rules.
+
+For an explicit user task, treat ordinary low-risk reversible inputs across the selected local computer as one continuous task authorization. Do not request approval again for each click, keystroke, window change, or routine verification. Keep consequential actions outside fast transactions and apply the host's action-time confirmation rules.
+
 - Obtain/import the runtime once and keep the same object alive for the task.
 - In ordinary local mode, start with a compact observation when accessibility data is sufficient. Use `launchAndAwaitReady` with a task-specific expectation after launching an app.
 - In `remote-fast-fix` mode, create one `createPersistentWindowSession` for the current ToDesk/Sunlogin window. Provide `targetApp`, `targetTitleIncludes`, the exact `remoteDeviceId`, `taskScope`, `success`, and either `authorizationGranted: true` or a synchronous `authorizationVerifier`. `operationScope` defaults to `entire-bound-device`, covering every desktop, drive, setting, application, terminal, service, network component, and registry area inside that locked remote device. Add `remoteIdentityIncludes`, `deviceIdExtractor`, `deviceVerifier`, `connectionVerifier`, and `stopSignalVerifier` when the host exposes stronger signals. Call `initialObserve()` once, then reuse the returned session.
