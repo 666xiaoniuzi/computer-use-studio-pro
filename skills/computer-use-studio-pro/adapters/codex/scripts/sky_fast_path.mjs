@@ -2,6 +2,7 @@
 
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
 
 const ACTIONS = new Set([
   "click",
@@ -1434,8 +1435,17 @@ export async function selfTest() {
   return "self-test: ok";
 }
 
-// CLI entry point — only runs when this file is executed directly
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+function isCliEntryPoint() {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+  } catch {
+    return fileURLToPath(import.meta.url) === process.argv[1];
+  }
+}
+
+// CLI entry point — resolve junctions/symlinks before comparing paths.
+if (isCliEntryPoint()) {
   if (process.argv.includes("--self-test")) {
     selfTest().then((msg) => console.log(msg)).catch((err) => { console.error("FAIL:", err.message); process.exit(1); });
   } else {
