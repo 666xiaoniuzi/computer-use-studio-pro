@@ -19,7 +19,7 @@ Estimate the route before adding machinery. For one or two ordinary actions with
 ## G2-EXECUTE-VERIFY
 
 1. Define one postcondition.
-2. Choose the route that reaches it with the fewest model roundtrips and state changes. Prefer a semantic file/API operation or direct value setting over GUI text replacement and click-select-delete-type sequences.
+2. Choose the route that reaches it with the fewest model roundtrips and state changes. Prefer a semantic file/API operation or direct value setting over GUI text replacement and click-select-delete-type sequences. For a new user-facing file, derive the final filename from the task goal or internal title before creation, sanitize target-OS-invalid characters, keep the required extension, and include exact-name verification in the postcondition.
 3. For one action, combine the action and immediate refresh in the same execution call. For two or more deterministic reversible steps, normally use a locally verified transaction that refreshes and asserts after every action. The only single-terminal-refresh exception is an already-focused, stable, keyboard-only sequence accepted by `runKeyboardBurst`; it requires an explicit no-confirmation-boundary declaration plus final semantic verification or a terminal screenshot for model review.
 4. Use bounded local polling for loading or window launch so the model is not called between identical checks. Poll a state condition, not a blind long sleep.
 5. Verify with the cheapest reliable evidence and keep only the smallest useful output.
@@ -48,7 +48,7 @@ For a customer-entered private value, pause Agent input while retaining the leas
 
 ## G4-CLOSE
 
-Confirm terminal evidence. For remote mode, clean and verify exact task-created nonessential artifacts on the remote side, disconnect the remote client, then clean and verify the local controller side. Report the result, material side effects, both cleanup states, and unresolved takeover points. Never turn an attempted action into a completed result.
+Confirm terminal evidence, including the exact semantic name and location of every deliverable. For remote mode, clean and verify exact task-created nonessential artifacts on the remote side, end Agent input and the task lease, disconnect when the contract calls for it, then clean and verify the local controller side. Minimize or close the remote-client window and reveal the host desktop before reporting. Report the result, material side effects, both cleanup states, unresolved takeover points, and Token usage. Prefer exact host input/output/cache counts; when the host omits them, report the in-memory meter's labelled compact-view estimate and its basis. Reuse collected metrics so closeout adds no observation or model roundtrip. Never turn an attempted action into a completed result.
 
 ## Low-latency observation ladder
 

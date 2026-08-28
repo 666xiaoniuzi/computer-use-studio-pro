@@ -101,6 +101,88 @@ function definedEntries(value) {
   return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined && item !== null));
 }
 
+const GENERIC_ARTIFACT_NAMES = /^(?:新建(?:的)?\s*(?:(?:docx|word)\s*)?(?:文档|文件)?|未命名(?:文档|文件)?|untitled|document\s*\d*|new\s+document|test)$/iu;
+const WINDOWS_RESERVED_NAMES = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/iu;
+
+/** Derive a stable user-facing filename before opening Save As. */
+export function deriveArtifactFileName(input, options = {}) {
+  const source = typeof input === "string" ? { task: input } : (input ?? {});
+  const candidates = [source.title, source.documentTitle, source.goal, source.task]
+    .map((value) => String(value ?? "").trim())
+    .filter(Boolean);
+  let base = candidates.find((value) => !GENERIC_ARTIFACT_NAMES.test(value.replace(/\.[^.]+$/u, "").trim()))
+    ?? String(options.fallback ?? "任务结果");
+  base = base
+    .split(/\r?\n/u)[0]
+    .replace(/^\s*(?:#+\s*|任务\s*[:：]\s*)/u, "")
+    .replace(/\.[A-Za-z0-9]{1,10}$/u, "")
+    .replace(/[<>:"/\\|?*\u0000-\u001F]/gu, " ")
+    .replace(/\s+/gu, " ")
+    .replace(/[. ]+$/gu, "")
+    .trim();
+  if (!base || GENERIC_ARTIFACT_NAMES.test(base)) base = String(options.fallback ?? "任务结果");
+  const maxBaseChars = Math.max(8, options.maxBaseChars ?? 48);
+  base = [...base].slice(0, maxBaseChars).join("").replace(/[. ]+$/gu, "");
+  if (WINDOWS_RESERVED_NAMES.test(base)) base = `_${base}`;
+  let extension = String(options.extension ?? source.extension ?? "").trim();
+  if (extension && !extension.startsWith(".")) extension = `.${extension}`;
+  extension = extension.replace(/[^.A-Za-z0-9]/gu, "").slice(0, 12);
+  return `${base}${extension}`;
+}
+
+function normalizedHostUsage(hostUsage) {
+  const usage = hostUsage?.usage ?? hostUsage;
+  if (!usage || typeof usage !== "object") return null;
+  const pick = (...names) => {
+    for (const name of names) {
+      const value = Number(usage[name]);
+      if (Number.isFinite(value) && value >= 0) return Math.round(value);
+    }
+    return undefined;
+  };
+  const inputTokens = pick("input_tokens", "prompt_tokens");
+  const outputTokens = pick("output_tokens", "completion_tokens");
+  const cachedInputTokens = pick("cached_input_tokens", "cached_tokens");
+  const explicitTotal = pick("total_tokens");
+  const totalTokens = explicitTotal ?? (
+    inputTokens !== undefined || outputTokens !== undefined
+      ? (inputTokens ?? 0) + (outputTokens ?? 0)
+      : undefined
+  );
+  if (totalTokens === undefined) return null;
+  return definedEntries({ input_tokens: inputTokens, output_tokens: outputTokens, cached_input_tokens: cachedInputTokens, total_tokens: totalTokens });
+}
+
+/** Aggregate already-emitted compact views without adding a tool/model roundtrip. */
+export function createTaskUsageMeter(options = {}) {
+  const charsPerToken = Math.max(1, Number(options.charsPerToken ?? 3));
+  const counters = { views: 0, compact_chars: 0, tool_calls: 0, screenshots: 0, actions: 0 };
+  return {
+    view(result, viewOptions = {}) {
+      const view = tokenView(result, viewOptions);
+      counters.views += 1;
+      counters.compact_chars += JSON.stringify(view).length;
+      counters.tool_calls += Number(view?.metrics?.sky_calls ?? 0);
+      counters.actions += Number(view?.metrics?.actions ?? 0);
+      counters.screenshots += Array.isArray(view?.summary?.screenshots) ? view.summary.screenshots.length : 0;
+      return view;
+    },
+    report(hostUsage = null) {
+      const exact = normalizedHostUsage(hostUsage);
+      if (exact) return { source: "host-exact", ...exact, ...counters };
+      return {
+        source: "estimated-compact-view",
+        estimated_compact_view_tokens: Math.ceil(counters.compact_chars / charsPerToken),
+        estimate_basis: `${counters.compact_chars} serialized compact characters / ${charsPerToken}`,
+        ...counters,
+      };
+    },
+    reset() {
+      Object.assign(counters, { views: 0, compact_chars: 0, tool_calls: 0, screenshots: 0, actions: 0 });
+    },
+  };
+}
+
 /**
  * Return a small, redacted result envelope while the caller retains raw state
  * in the persistent kernel. Make this the final node_repl expression to avoid
@@ -2242,6 +2324,19 @@ export async function selfTest() {
     ],
   };
   const compactTokenView = tokenView({ ok: true, state: tokenState, metrics: { actions: 1, observation_chars: 9999, compact_chars: 500 } }, { maxChars: 400 });
+  const semanticName = deriveArtifactFileName({ title: "Codex、Claude Code、CC Switch 与 DSH 使用指南", task: "写一份使用说明" }, { extension: "docx" });
+  const fallbackName = deriveArtifactFileName({ title: "新建 DOCX 文档", task: "远程模型切换使用指南" }, { extension: ".docx" });
+  if (semanticName !== "Codex、Claude Code、CC Switch 与 DSH 使用指南.docx" || fallbackName !== "远程模型切换使用指南.docx") {
+    throw new Error(`semantic filename self-test failed: ${semanticName}; ${fallbackName}`);
+  }
+  const usageMeter = createTaskUsageMeter({ charsPerToken: 3 });
+  usageMeter.view({ ok: true, state: tokenState, metrics: { actions: 1, sky_calls: 2 } }, { maxChars: 400 });
+  const estimatedUsage = usageMeter.report();
+  const exactUsage = usageMeter.report({ input_tokens: 12, output_tokens: 8, cached_input_tokens: 4 });
+  if (estimatedUsage.source !== "estimated-compact-view" || estimatedUsage.estimated_compact_view_tokens < 1
+      || exactUsage.source !== "host-exact" || exactUsage.total_tokens !== 20 || exactUsage.cached_input_tokens !== 4) {
+    throw new Error("task usage meter self-test failed");
+  }
   const noScreenshotState = compactState(tokenState, { maxChars: 400, screenshotLimit: 0 });
   const tokenJson = JSON.stringify(compactTokenView);
   if ("state" in compactTokenView || tokenJson.includes("abc123456789") || tokenJson.includes("observation_chars")

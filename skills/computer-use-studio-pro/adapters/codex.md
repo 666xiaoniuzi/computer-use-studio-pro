@@ -17,6 +17,9 @@ if (!globalThis.cusproFastPath) {
   const modulePath = path.join(homeDir, ".codex", "skills", "computer-use-studio-pro", "adapters", "codex", "scripts", "sky_fast_path.mjs");
   globalThis.cusproFastPath = await import(pathToFileURL(modulePath).href);
 }
+if (!globalThis.cusproUsage) {
+  globalThis.cusproUsage = globalThis.cusproFastPath.createTaskUsageMeter();
+}
 ```
 
 Use the actual Skill root when installation differs. Reuse both globals for the whole task.
@@ -27,10 +30,10 @@ Keep full observations/results in `globalThis`; make `tokenView` the final expre
 
 ```js
 globalThis.last = await globalThis.session.observe("routine");
-globalThis.cusproFastPath.tokenView(globalThis.last, { maxChars: 900 });
+globalThis.cusproUsage.view(globalThis.last, { maxChars: 900 });
 ```
 
-Use `maxChars: 400` for stable polling/window state, about `900` for routine decisions, and up to `1800` for ambiguity or recovery. Add `needles` to select only relevant accessibility lines. Keep screenshots only when the next decision needs pixels. Raw state remains available as `globalThis.last.state` for the next action.
+Use `maxChars: 400` for stable polling/window state, about `900` for routine decisions, and up to `1800` for ambiguity or recovery. Add `needles` to select only relevant accessibility lines. Keep screenshots only when the next decision needs pixels. Raw state remains available as `globalThis.last.state` for the next action. The meter wraps `tokenView`, accumulates only already emitted compact envelopes, and requires no additional GUI or model call.
 
 Prefer the matching helper, persistent session, signal adapter, and `tokenView`; use raw `sky` only for an uncovered capability or bounded recovery with the same target lease and postcondition.
 
@@ -55,11 +58,17 @@ session.pauseForUserInput("private-input", { returnExpect, steps, settleMs: 350 
 // Later, from the approved local customer-done event callback:
 session.signalUserInputComplete({ source: "approved-event" });
 globalThis.last = await session.resumeAndContinue();
-cusproFastPath.tokenView(globalThis.last, { maxChars: 400 });
+globalThis.cusproUsage.view(globalThis.last, { maxChars: 400 });
 ```
 
 The fast path checks the bound window, takes one screenshot-free compact observation, and executes prepared steps only when `returnExpect` matches. It emits no screenshot and saves one model roundtrip on the stable path; mismatch returns compact evidence for diagnosis. `resumeAgentControl()` remains the general visual fallback. Keep full secrets out of model/log output.
 
 Call `session.verifySuccess()` before completion and require `success_verified=true`. Use `noteAttempt(signature, strategy)` and pivot after the repeated-path guard. Keep raw session state in the kernel and return only `tokenView(...)` plus necessary metrics.
 
-For Office bulk text, `scripts/ooxml_text.py` writes and verifies a new copy; inspect it visually when the task requires visual fidelity.
+For Office bulk text, `scripts/ooxml_text.py` writes and verifies a new copy; inspect it visually when the task requires visual fidelity. Before opening Save As, call `deriveArtifactFileName({ title, task }, { extension: ".docx" })` (or the matching extension), use clipboard paste when remote Unicode direct typing is unreliable, then verify the exact desktop filename. A generic application default is a failed filename postcondition, even when document contents are correct.
+
+## Completion handback and usage
+
+For remote work, finish cleanup, end Agent input, revoke/close the task lease, then minimize or close the bound remote-client window and reveal the host desktop. Reuse the latest valid window lease and a screenshot-free lifecycle/window check; do not add a visual-model turn merely for handback.
+
+Every completion response includes `cusproUsage.report(hostUsage)` output. Pass host usage when Codex exposes `input_tokens`, `output_tokens`, cached-input Tokens, or a total; the report labels those as `host-exact`. If the host omits usage, call `cusproUsage.report()` and label `estimated_compact_view_tokens`, `compact_chars`, `tool_calls`, and `screenshots` as a compact-view estimate rather than an API billing total.

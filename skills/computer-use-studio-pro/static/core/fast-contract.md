@@ -27,4 +27,6 @@
 - Request only the observation channel needed for the next decision. Reuse stable handles and use local polling/window enumeration for unchanged waits.
 - Retry the same `failure signature + strategy` at most twice, then remap or pivot. Preserve the last verified checkpoint and rollback head.
 - Disconnect revokes remote authorization. Same-device reconnect requires fresh authorization and complete remapping. Device conflict or emergency stop latches stopped.
+- Select a semantic final filename before creating each deliverable; preserve its extension and verify the exact saved name. Generic defaults such as `新建文档`, `Untitled`, and `Document1` do not satisfy completion.
 - Clean only positively owned task artifacts; preserve pre-existing files and deliverables.
+- Every final report includes exact host Token usage when available, otherwise a labelled compact-view estimate from already collected metrics. A remote close also ends Agent input and returns the visible foreground to the host desktop.

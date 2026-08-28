@@ -19,7 +19,7 @@ Default operation scope is `entire-bound-device`: every desktop, drive, setting,
 3. Capture one complete initial view. Record client state, device identity cue, geometry, visible modal, remote OS, and first useful symptom.
 4. Activate one connected-session authorization lease only after connected state and exact-device evidence pass.
 5. Afterwards prefer compact accessibility state, a relevant subtree, delta, crop, or cheap window enumeration. A semantic/layout mismatch promotes one screenshot.
-6. Define one postcondition; execute one reversible action or an eligible verified transaction; refresh and assert locally.
+6. Define one postcondition; execute one reversible action or an eligible verified transaction; refresh and assert locally. When creating a deliverable, choose its task/title-derived final filename first and verify that exact name and extension after save.
 7. Return to the model only for a new decision, mismatch, confirmation boundary, recovery choice, or final verification.
 
 For Codex, use `createRemoteClientSignalAdapter` and `createPersistentWindowSession` from `sky_fast_path.mjs`. Feed the signal adapter's synchronous connection/device/stop verifiers to the session. This classifies stable ToDesk/向日葵 state inside JavaScript instead of spending a model turn on unchanged text.
@@ -100,8 +100,9 @@ Close in this order:
 1. Verify functional success and freeze new mutations.
 2. Preserve deliverables, installed/configured results, pre-existing files, committed source changes, and rollback material still needed.
 3. While connected, remove exact remote task-owned temporary, abandoned, duplicate, and expired rollback artifacts; verify absence.
-4. Disconnect the remote client.
+4. End Agent input and revoke/close the task lease. Disconnect only when the task contract calls for it; otherwise leave the customer deliverable in a stable state.
 5. Remove and verify the same classes under the local task root. Use `scripts/task_artifacts.py` when local working files exist; any untracked remainder is `cleanup_pending`.
-6. Report visible outcome, root cause, 1-3 changes, fresh verification, masked API status when applicable, and both cleanup states.
+6. Minimize or close the ToDesk/向日葵 window and reveal the host desktop. Use the latest valid window lease and a screenshot-free window-state/lifecycle check so handback adds no visual-model turn.
+7. Report visible outcome, exact deliverable name/path, root cause, 1-3 changes, fresh verification, masked API status when applicable, both cleanup states, and Token usage. Prefer exact host totals; otherwise label the compact-view estimate and show its basis.
 
 Never clean broad user folders, application/system caches, historical logs, ambiguous paths, or pre-existing content as part of task cleanup.
