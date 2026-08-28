@@ -68,6 +68,8 @@ Writing `$computer-use-studio-pro` explicitly is optional. Natural-language requ
 
 Whenever a task actually uses Computer Use or `@oai/sky`, load this Skill first, then read the host Computer Use API guidance, and import `adapters/codex/scripts/sky_fast_path.mjs` into the same persistent runtime. Ordinary low-risk reversible work in an explicit task uses one task-wide authorization, one window binding, and compact observations. Add model roundtrips only for new decisions, unexpected branches, risk boundaries, or terminal verification. Runtime execution uses the installed local bundle rather than re-downloading GitHub for every task.
 
+Version 0.7.0 adds a local ToDesk/Sunlogin signal adapter and coordinate, focus, and semantic observation leases for high-load remote tasks. Connection, device, disconnect, and stop states are classified inside the persistent runtime; stale references are blocked before input, a newly visible conflicting device ID latches the session, and ordinary inputs still reuse the cached authorization gate.
+
 Version 0.6.0 adds two high-yield fast paths. `runKeyboardBurst` compresses two or three inputs in one already-focused stable field into a single terminal observation. `waitForWindowListState` verifies app/window appearance or closure through lightweight enumeration. Dynamic navigation, pointer input, risk boundaries, and uncertain focus retain per-action refreshes.
 
 ### Local mode

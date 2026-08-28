@@ -127,6 +127,128 @@ function defaultObservedDeviceIds(state) {
     .filter(Boolean);
 }
 
+const REMOTE_CLIENT_PROFILES = Object.freeze({
+  todesk: Object.freeze({
+    aliases: ["todesk", "to-desk"],
+    devicePattern: /(?:todesk\s*(?:id|设备码)|设备(?:代码|id|编号)|远程(?:设备)?id)\s*[:：#]?\s*([0-9](?:[0-9 -]{3,20}[0-9]))/giu,
+    reconnecting: /(?:正在重连|正在重新连接|重连中|reconnect(?:ing)?|restoring\s+(?:the\s+)?connection)/iu,
+    disconnected: /(?:连接(?:已)?断开|远程(?:连接|会话)(?:已)?(?:断开|结束)|对方设备(?:已)?离线|连接失败|device\s+offline|session\s+ended|disconnected|connection\s+(?:lost|closed|failed))/iu,
+    stopped: /(?:对方(?:已)?(?:停止|终止)远程控制|远程控制(?:已)?(?:停止|终止|结束)|客户(?:已)?急停|remote\s+control\s+(?:was\s+)?stopped|session\s+terminated\s+by\s+(?:the\s+)?remote)/iu,
+  }),
+  sunlogin: Object.freeze({
+    aliases: ["sunlogin", "sunflower", "向日葵"],
+    devicePattern: /(?:向日葵\s*(?:识别码|设备码)|本机识别码|伙伴识别码|设备(?:代码|id|编号)|远程(?:设备)?id|sunlogin\s*id)\s*[:：#]?\s*([0-9](?:[0-9 -]{3,20}[0-9]))/giu,
+    reconnecting: /(?:正在重连|正在重新连接|重连中|reconnect(?:ing)?|restoring\s+(?:the\s+)?connection)/iu,
+    disconnected: /(?:主机(?:已)?离线|被控端(?:已)?离线|远程(?:连接|控制)(?:已)?(?:断开|结束)|连接(?:已)?断开|连接失败|host\s+offline|session\s+ended|disconnected|connection\s+(?:lost|closed|failed))/iu,
+    stopped: /(?:对方(?:已)?(?:停止|终止)控制|远程控制(?:已)?(?:停止|终止|结束)|客户(?:已)?急停|remote\s+control\s+(?:was\s+)?stopped|session\s+terminated\s+by\s+(?:the\s+)?remote)/iu,
+  }),
+});
+
+function resolveRemoteClientProfile(client) {
+  const normalized = String(client ?? "").trim().toLowerCase();
+  for (const [name, profile] of Object.entries(REMOTE_CLIENT_PROFILES)) {
+    if (name === normalized || profile.aliases.some((alias) => alias.toLowerCase() === normalized)) {
+      return { name, profile };
+    }
+  }
+  throw new Error(`Unsupported remote client profile: ${client}`);
+}
+
+function profileObservedDeviceIds(profile, state) {
+  const pattern = new RegExp(profile.devicePattern.source, profile.devicePattern.flags);
+  return [...stateText(state).matchAll(pattern)]
+    .map((match) => normalizeDeviceId(match[1]))
+    .filter(Boolean);
+}
+
+/**
+ * Build synchronous ToDesk/Sunlogin signals that can be passed directly to a
+ * persistent remote session. Parsing stays inside the runtime, so unchanged
+ * connection/device observations do not need a model decision.
+ */
+export function createRemoteClientSignalAdapter(client, options = {}) {
+  const { name, profile } = resolveRemoteClientProfile(client);
+  const remoteDeviceId = String(options.remoteDeviceId ?? "").trim();
+  const expected = normalizeDeviceId(remoteDeviceId);
+  if (!expected) throw new Error("createRemoteClientSignalAdapter requires remoteDeviceId");
+  let bound = false;
+  let baselineIds = new Set();
+  let lastSnapshot = null;
+
+  function inspectInternal(state) {
+    validateObservation(state);
+    const text = stateText(state);
+    const observedIds = [...new Set([
+      ...defaultObservedDeviceIds(state),
+      ...profileObservedDeviceIds(profile, state),
+    ])];
+    const stopped = profile.stopped.test(text);
+    const reconnecting = !stopped && profile.reconnecting.test(text);
+    const disconnected = !stopped && !reconnecting && profile.disconnected.test(text);
+    const connection = stopped ? "stopped" : reconnecting ? "reconnecting" : disconnected ? "disconnected" : "connected";
+    const expectedVisible = observedIds.includes(expected) || stateContainsDeviceId(state, remoteDeviceId);
+    const conflictingIds = bound
+      ? observedIds.filter((observed) => !baselineIds.has(observed))
+      : [];
+    lastSnapshot = {
+      client: name,
+      connection,
+      stopped,
+      expected_device_visible: expectedVisible,
+      conflicting_device: conflictingIds.length > 0,
+      observed_device_hashes: observedIds.map(deviceIdHash),
+      expected_device_sha256_12: deviceIdHash(remoteDeviceId),
+    };
+    return { ...lastSnapshot, observedIds, conflictingIds };
+  }
+
+  function connectionVerifier(state) {
+    return inspectInternal(state).connection === "connected";
+  }
+
+  function stopSignalVerifier(state) {
+    return inspectInternal(state).stopped;
+  }
+
+  function deviceVerifier(state, expectedDeviceId, _fingerprint, context = {}) {
+    if (normalizeDeviceId(expectedDeviceId) !== expected) return false;
+    const signals = inspectInternal(state);
+    if (!bound || context.require_evidence === true) {
+      if (!signals.expected_device_visible) return false;
+      baselineIds = new Set([...signals.observedIds, expected]);
+      bound = true;
+      return true;
+    }
+    return signals.conflictingIds.length === 0;
+  }
+
+  function snapshot() {
+    return lastSnapshot ? { ...lastSnapshot } : {
+      client: name,
+      connection: "unobserved",
+      stopped: false,
+      expected_device_visible: false,
+      conflicting_device: false,
+      observed_device_hashes: [],
+      expected_device_sha256_12: deviceIdHash(remoteDeviceId),
+    };
+  }
+
+  function inspect(state) {
+    inspectInternal(state);
+    return snapshot();
+  }
+
+  return Object.freeze({
+    client: name,
+    connectionVerifier,
+    deviceVerifier,
+    stopSignalVerifier,
+    inspect,
+    snapshot,
+  });
+}
+
 function defaultConnectionVerifier(state) {
   const text = stateText(state);
   return !/(?:remote\s+(?:device|session).*(?:disconnected|offline|ended)|connection\s+(?:lost|closed)|remote\s+reconnecting|远程(?:连接|会话).*(?:已断开|已结束)|设备已离线|正在重新连接远程设备)/i.test(text);
@@ -339,6 +461,7 @@ export function createPersistentWindowSession(sky, options = {}) {
   const authorizationVerifier = options.authorizationVerifier;
   const stopSignalVerifier = options.stopSignalVerifier;
   const disconnectErrorMatcher = options.disconnectErrorMatcher ?? defaultDisconnectErrorMatcher;
+  const clock = options.clock ?? Date.now;
   for (const [name, callback] of Object.entries({
     targetVerifier,
     deviceIdExtractor,
@@ -347,6 +470,7 @@ export function createPersistentWindowSession(sky, options = {}) {
     authorizationVerifier,
     stopSignalVerifier,
     disconnectErrorMatcher,
+    clock,
   })) {
     if (callback != null && typeof callback !== "function") throw new Error(`${name} must be a function`);
   }
@@ -359,11 +483,21 @@ export function createPersistentWindowSession(sky, options = {}) {
   const maxBurstActions = options.maxBurstActions ?? 3;
   const maxSamePathAttempts = options.maxSamePathAttempts ?? 2;
   const screenshotOnSemanticChange = options.screenshotOnSemanticChange ?? mode === "remote-fast-fix";
+  const observationLeaseMs = Object.freeze({
+    coordinate: options.coordinateLeaseMs ?? (mode === "remote-fast-fix" ? 15_000 : 30_000),
+    focus: options.focusLeaseMs ?? (mode === "remote-fast-fix" ? 45_000 : 60_000),
+    semantic: options.semanticLeaseMs ?? (mode === "remote-fast-fix" ? 90_000 : 120_000),
+  });
   if (!Number.isInteger(maxBurstActions) || maxBurstActions < 1 || maxBurstActions > 3) {
     throw new Error("maxBurstActions must be an integer from 1 to 3");
   }
   if (!Number.isInteger(maxSamePathAttempts) || maxSamePathAttempts < 1) {
     throw new Error("maxSamePathAttempts must be a positive integer");
+  }
+  for (const [kind, duration] of Object.entries(observationLeaseMs)) {
+    if (!(duration === Infinity || (Number.isFinite(duration) && duration >= 0))) {
+      throw new Error(`${kind} observation lease must be zero or greater`);
+    }
   }
 
   let window = initialWindow;
@@ -386,7 +520,53 @@ export function createPersistentWindowSession(sky, options = {}) {
   let successEpoch = null;
   let lastVerifiedCheckpoint = null;
   let boundLabeledDeviceIds = null;
+  let lastObservationAt = null;
   const attempts = new Map();
+
+  function currentTime() {
+    const value = Number(clock());
+    if (!Number.isFinite(value)) throw new Error("clock must return a finite timestamp");
+    return value;
+  }
+
+  function observationAgeMs() {
+    return lastObservationAt == null ? Infinity : Math.max(0, currentTime() - lastObservationAt);
+  }
+
+  function actionLeaseKind(action) {
+    const method = action?.method;
+    const args = action?.args ?? {};
+    if (["click", "scroll", "drag"].includes(method)
+        && (args.screenshotId != null || args.x != null || args.y != null || args.path != null
+          || args.from_x != null || args.from_y != null || args.to_x != null || args.to_y != null)) {
+      return "coordinate";
+    }
+    if (["type_text", "press_key"].includes(method)) return "focus";
+    if (Number.isInteger(args.element_index) || method === "set_value" || method === "perform_secondary_action") {
+      return "semantic";
+    }
+    return null;
+  }
+
+  function assertObservationFresh(actions) {
+    const actionList = Array.isArray(actions) ? actions : [actions];
+    const kinds = actionList.map(actionLeaseKind).filter(Boolean);
+    if (kinds.length === 0) return { kind: "window", age_ms: observationAgeMs(), max_age_ms: Infinity };
+    const kind = kinds.reduce((selected, candidate) => (
+      observationLeaseMs[candidate] < observationLeaseMs[selected] ? candidate : selected
+    ));
+    const age = observationAgeMs();
+    const maxAge = observationLeaseMs[kind];
+    if (age > maxAge) {
+      const error = new Error(`Observation lease expired for ${kind} input; refresh and remap before input`);
+      error.code = "STALE_OBSERVATION_LEASE";
+      error.lease_kind = kind;
+      error.age_ms = age;
+      error.max_age_ms = maxAge;
+      throw error;
+    }
+    return { kind, age_ms: age, max_age_ms: maxAge };
+  }
 
   function targetFingerprint() {
     return {
@@ -425,7 +605,11 @@ export function createPersistentWindowSession(sky, options = {}) {
 
   function deviceMatches(nextState, { requireEvidence = false } = {}) {
     if (mode !== "remote-fast-fix") return true;
-    if (deviceVerifier) return callbackBoolean("deviceVerifier", deviceVerifier, nextState, remoteDeviceId, targetFingerprint());
+    if (deviceVerifier) {
+      return callbackBoolean("deviceVerifier", deviceVerifier, nextState, remoteDeviceId, targetFingerprint(), {
+        require_evidence: requireEvidence,
+      });
+    }
     if (deviceIdExtractor) {
       const observed = deviceIdExtractor(nextState, targetFingerprint());
       if (observed && typeof observed.then === "function") throw new Error("deviceIdExtractor must return synchronously");
@@ -527,6 +711,7 @@ export function createPersistentWindowSession(sky, options = {}) {
 
     window = nextState.window;
     state = nextState;
+    lastObservationAt = currentTime();
     lastTitle = nextTitle;
     if (nextGeometry) lastGeometry = nextGeometry;
     lastContentSignature = nextContentSignature;
@@ -653,8 +838,9 @@ export function createPersistentWindowSession(sky, options = {}) {
 
   async function act(action, refresh = {}) {
     if (!initialized) await initialObserve();
+    assertInputAllowed(state);
+    const inputLease = assertObservationFresh(action);
     try {
-      assertInputAllowed(state);
       successVerified = false;
       successEpoch = null;
       const nextState = await actAndRefresh(sky, state, action, refresh);
@@ -673,7 +859,7 @@ export function createPersistentWindowSession(sky, options = {}) {
         state,
         summary: compactState(state, refresh),
         visual_summary: visual?.summary ?? null,
-      }, changes, { promoted_screenshot: Boolean(visual) });
+      }, changes, { promoted_screenshot: Boolean(visual), input_lease: inputLease });
     } catch (error) {
       const outcomeUnknown = error?.outcome !== "failed";
       handleRuntimeError(error, "action-or-refresh");
@@ -698,6 +884,7 @@ export function createPersistentWindowSession(sky, options = {}) {
       throw new Error(`Stable transaction requires 1-${maxBurstActions} actions`);
     }
     assertInputAllowed(state);
+    const inputLease = assertObservationFresh(steps);
     successVerified = false;
     successEpoch = null;
     const result = await runVerifiedTransaction(sky, state, steps, {
@@ -728,7 +915,7 @@ export function createPersistentWindowSession(sky, options = {}) {
       transition("stalled", "transaction-outcome-unknown");
     }
     if (result.ok) rememberVerifiedCheckpoint("transaction", state);
-    return withSessionMeta(result, changes, { promoted_screenshot: Boolean(visual) });
+    return withSessionMeta(result, changes, { promoted_screenshot: Boolean(visual), input_lease: inputLease });
   }
 
   async function keyboardBurst(steps, burstOptions = {}) {
@@ -737,6 +924,7 @@ export function createPersistentWindowSession(sky, options = {}) {
       throw new Error(`Keyboard burst exceeds the ${maxBurstActions}-action session limit`);
     }
     assertInputAllowed(state);
+    const inputLease = assertObservationFresh(steps);
     successVerified = false;
     successEpoch = null;
     const result = await runKeyboardBurst(sky, state, steps, {
@@ -756,7 +944,7 @@ export function createPersistentWindowSession(sky, options = {}) {
       transition("stalled", "keyboard-burst-outcome-unknown");
     }
     if (result.verified) rememberVerifiedCheckpoint("keyboard-burst", state);
-    return withSessionMeta(result, changes, { promoted_screenshot: false });
+    return withSessionMeta(result, changes, { promoted_screenshot: false, input_lease: inputLease });
   }
 
   function noteAttempt(signature, strategy) {
@@ -954,6 +1142,8 @@ export function createPersistentWindowSession(sky, options = {}) {
       layout_epoch: layoutEpoch,
       semantic_epoch: semanticEpoch,
       pending_visual_refresh: pendingVisualRefresh,
+      observation_age_ms: observationAgeMs(),
+      observation_lease_ms: observationLeaseMs,
       authorization_status: authorizationStatus,
       authorization_check_mode: mode === "remote-fast-fix" ? "session-lease" : "not-required",
       session_status: sessionStatus,
@@ -986,6 +1176,8 @@ export function createPersistentWindowSession(sky, options = {}) {
     waitUntil,
     verifySuccess,
     assertInputAllowed,
+    assertObservationFresh,
+    observationAgeMs,
     snapshot,
   });
 }
@@ -1506,6 +1698,44 @@ export async function selfTest() {
     },
   };
   const observation = { window, accessibility: { tree: "13 Edit", focused_element: "13 Edit" }, screenshots: [] };
+  const toDeskSignals = createRemoteClientSignalAdapter("ToDesk", { remoteDeviceId });
+  const toDeskInitial = {
+    window,
+    accessibility: { focused_element: "13 Edit", document_text: `ToDesk 设备ID：${remoteDeviceId}`, tree: `13 Edit ToDesk 设备ID：${remoteDeviceId}` },
+    screenshots: [],
+  };
+  if (!toDeskSignals.connectionVerifier(toDeskInitial)
+      || !toDeskSignals.deviceVerifier(toDeskInitial, remoteDeviceId)
+      || toDeskSignals.stopSignalVerifier(toDeskInitial)) {
+    throw new Error("ToDesk signal adapter initial binding self-test failed");
+  }
+  const toDeskHidden = { window, accessibility: { focused_element: "13 Edit", document_text: "Remote desktop settings", tree: "13 Edit Remote desktop settings" }, screenshots: [] };
+  if (!toDeskSignals.deviceVerifier(toDeskHidden, remoteDeviceId)) {
+    throw new Error("ToDesk signal adapter lost a temporarily hidden device binding");
+  }
+  if (toDeskSignals.deviceVerifier(toDeskHidden, remoteDeviceId, null, { require_evidence: true })) {
+    throw new Error("ToDesk signal adapter accepted reconnect without device evidence");
+  }
+  const toDeskConflict = {
+    window,
+    accessibility: { focused_element: "13 Edit", document_text: `设备ID：${remoteDeviceId}\n远程设备ID：987-654-321`, tree: `设备ID：${remoteDeviceId}\n远程设备ID：987-654-321` },
+    screenshots: [],
+  };
+  if (toDeskSignals.deviceVerifier(toDeskConflict, remoteDeviceId)
+      || toDeskSignals.connectionVerifier({ ...toDeskHidden, accessibility: { document_text: "连接已断开", tree: "连接已断开" } })
+      || !toDeskSignals.stopSignalVerifier({ ...toDeskHidden, accessibility: { document_text: "对方已终止远程控制", tree: "对方已终止远程控制" } })) {
+    throw new Error("ToDesk signal adapter conflict/disconnect/stop self-test failed");
+  }
+  const sunloginSignals = createRemoteClientSignalAdapter("向日葵", { remoteDeviceId });
+  const sunloginInitial = {
+    window,
+    accessibility: { focused_element: "13 Edit", document_text: `向日葵识别码：${remoteDeviceId}`, tree: `13 Edit 向日葵识别码：${remoteDeviceId}` },
+    screenshots: [],
+  };
+  if (!sunloginSignals.connectionVerifier(sunloginInitial)
+      || !sunloginSignals.deviceVerifier(sunloginInitial, remoteDeviceId)) {
+    throw new Error("Sunlogin signal adapter initial binding self-test failed");
+  }
   const result = await fillEditable(mockSky, observation, { element_index: 13, value: "hello", strategy: "keyboard", risk: "reversible" });
   if (!result.ok || result.completed !== 3 || result.metrics.sky_calls !== 6 || !result.summary.document_text.includes("hello")) {
     throw new Error("verified transaction self-test failed");
@@ -1698,6 +1928,40 @@ export async function selfTest() {
   );
   if (!localBurst.ok || !localBurst.verified || localBurst.metrics.saved_observations !== 1) {
     throw new Error("persistent session keyboard burst self-test failed");
+  }
+  let fakeNow = 1_000;
+  let staleLeaseInputs = 0;
+  const staleLeaseSky = {
+    ...mockSky,
+    async type_text(input) { staleLeaseInputs += 1; calls.push(["stale_lease_type_text", input]); },
+  };
+  const staleLeaseSession = createPersistentWindowSession(staleLeaseSky, {
+    mode: "local",
+    window,
+    clock: () => fakeNow,
+    coordinateLeaseMs: 50,
+    focusLeaseMs: 50,
+  });
+  await staleLeaseSession.initialObserve();
+  fakeNow += 51;
+  let staleDragLeaseRejected = false;
+  try {
+    staleLeaseSession.assertObservationFresh({ method: "drag", args: { from_x: 1, from_y: 1, to_x: 2, to_y: 2 } });
+  } catch (error) {
+    staleDragLeaseRejected = error?.code === "STALE_OBSERVATION_LEASE" && error?.lease_kind === "coordinate";
+  }
+  let staleLeaseRejected = false;
+  try {
+    await staleLeaseSession.act(
+      { method: "type_text", args: { text: "expired" } },
+      { expect: { includes: "expired" } },
+    );
+  } catch (error) {
+    staleLeaseRejected = error?.code === "STALE_OBSERVATION_LEASE" && error?.lease_kind === "focus";
+  }
+  if (!staleDragLeaseRejected || !staleLeaseRejected || staleLeaseInputs !== 0
+      || staleLeaseSession.snapshot().observation_age_ms !== 51) {
+    throw new Error("expired observation lease reached an input action");
   }
   value = "";
   const redacted = compactState({ window, accessibility: { focused_element: "Edit", document_text: "token=abc123456789 and Bearer abcdefghijklmnop; user@example.com; +86 138 0013 8000", tree: "Edit token=abc123456789" }, screenshots: [] });
