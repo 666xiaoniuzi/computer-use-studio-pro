@@ -44,7 +44,7 @@ Use: retry once -> refresh state/geometry -> switch route -> restore checkpoint 
 
 For a remote disconnect, revoke the current authorization and retain the last verified checkpoint. Reconnect to the same device, obtain fresh authorization, capture a complete view, reconcile committed effects, and continue from the first unmet postcondition. A device switch or emergency stop latches the session in `stopped`.
 
-For a password, OTP, UAC credential, or other customer-entered value, pause Agent input while retaining the connected authorization lease. On handback, capture one fresh observation, remap focus, and continue under the same lease when no disconnect or target-lock event occurred.
+For a customer-entered private value, pause Agent input while retaining the lease. Pre-register the expected return state and optional reversible continuation. After a matching explicit completion event, debounce briefly, check the bound window cheaply, take one compact screenshot-free observation, and continue locally only on the expected state. A mismatch returns to G3; a disconnect or target-lock event follows normal recovery.
 
 ## G4-CLOSE
 

@@ -17,7 +17,7 @@
 
 - Explicit tasks use continuous authorization for ordinary low-risk reversible work; avoid repeated routine prompts.
 - Remote input requires the cached connected-session gate, exact device binding, Agent ownership, and no latched stop. Live remote verifiers run on accepted observations/events/reconnect rather than every input.
-- During password, OTP, payment approval, UAC, or private-value entry, pause Agent input. After handback, refresh once and resume the intact lease when target and connection are unchanged.
+- For private input, pause with a return expectation. After an explicit customer-done event, use the local fast-resume path: debounce, cheap binding check, one compact screenshot-free observation, then an optional verified continuation in the same call. Fall back on mismatch.
 - Keep passwords, cookies, tokens, API keys, one-time codes, and private clipboard values out of model output, logs, and persistent state. Clear task-owned clipboard and temporary traces after configuration.
 
 ## Verification, tokens, and recovery

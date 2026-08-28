@@ -1,6 +1,6 @@
 interface:
   display_name: "Computer Use Studio Pro"
   short_description: "自动触发的低延迟、低 Token 本机与远程电脑控制验证层"
-  default_prompt: "使用 $computer-use-studio-pro 自动判断 local 或 remote-fast-fix 模式，以持久运行时、sky_fast_path.mjs、单窗口绑定、紧凑 tokenView 和可观察终态完成任务。"
+  default_prompt: "使用 $computer-use-studio-pro 自动判断模式，以持久运行时、单窗口绑定、紧凑 tokenView 和事件驱动客户回交完成可验证任务。"
 policy:
   allow_implicit_invocation: true

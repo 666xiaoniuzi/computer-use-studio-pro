@@ -23,6 +23,7 @@ Use these levers:
 15. reject expired coordinate, focus, and semantic leases before input, paying for recovery only when a reference is actually stale.
 16. keep the entrypoint, always-load contract, adapter, and selected profile concise; load detailed core workflow, recovery, and benchmark references only when the current branch needs them;
 17. keep full results in the persistent runtime and make `tokenView(result, { maxChars })` the final expression of the same execution cell, avoiding a second tool call and avoiding raw state emission.
+18. for customer handback, prepare the expected return state before pausing; let an approved local event call `signalUserInputComplete` and `resumeAndContinue`, combining debounce, binding check, one compact screenshot-free observation, and eligible continuation without another model turn.
 
 Do not reduce latency by reusing stale indexes/coordinates, hiding confirmations, or queueing general unverified GUI macros. `runKeyboardBurst` is the only terminal-only input burst: it requires current focus proof, stable single-field scope, a narrow keyboard vocabulary, an explicit confirmation-boundary declaration, and terminal semantic or visual verification.
 
@@ -58,6 +59,7 @@ Track:
 - Compact resume output contains no more than four events and eight active retry entries per category.
 - Routine Codex cells retain raw results in the persistent kernel and emit only `tokenView`; its output excludes the raw `state`, full observation character count, and unredacted secrets.
 - Use compact budgets around 400 characters for stable polling, 900 for routine work, and 1800 only for ambiguity or recovery. Raise the budget rather than guessing when the compact state lacks evidence.
+- A fast handback accepts no Agent input before an explicit matching completion event, emits no screenshot on the stable path, and saves one model roundtrip. Mismatch performs no prepared continuation and returns compact evidence.
 
 ## Advantage gate
 
@@ -110,3 +112,9 @@ On 2026-08-28, the default Codex/Windows instruction chain was measured as UTF-8
 - 0.7.1 remote chain: `26,205` bytes, a `45.9%` reduction.
 
 Bytes are an instruction-size proxy rather than provider token billing. Version 0.7.1 replaces the two detailed always-load core files with one compact contract, keeps detailed workflow/recovery files on demand, changes the routine compact-state budget from 1800 to about 900 characters, and adds `tokenView`. The helper keeps raw state inside the persistent kernel while emitting only status, compact redacted evidence, selected metrics, and bounded change/reason text. Its self-test checks that raw `state`, `observation_chars`, full secrets, and excess screenshots do not enter the compact envelope.
+
+## 0.7.2 customer-handback reference
+
+The deterministic mock regression for a signaled customer handback plus one prepared verified action produced zero screenshots, a 400-character-budget `tokenView` of 660 serialized characters, and `model_roundtrips_saved=1`. It also verifies that Agent input remains paused before the matching completion event and that the authorization verifier is not repeated. Real remote latency still includes one current semantic observation and each prepared action's verification refresh.
+
+The default Codex/Windows instruction chains did not grow: local decreased from `18,172` to `18,071` UTF-8 bytes and remote from `26,205` to `26,201`. Thus the new handback capability adds no default instruction-size token proxy. Measure provider billing and real ToDesk/Sunlogin handback latency separately when those counters are available.

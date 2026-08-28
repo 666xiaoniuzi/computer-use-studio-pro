@@ -5,7 +5,7 @@ description: Automatically load this low-latency, token-efficient orchestration 
 
 # Computer Use Studio Pro
 
-This Skill is the single planning and verification layer over the host's approved GUI, browser, connector, file, and API tools. The host runtime supplies mouse, keyboard, screenshot, window, and accessibility calls.
+This Skill is one planning/verification layer over the host's approved GUI, browser, connector, file, and API tools; the host supplies input and observation calls.
 
 ## Trigger and route
 
@@ -60,7 +60,7 @@ Never trade away fresh evidence, device lock, connected-session authorization, c
 
 In `remote-fast-fix`, the default operation surface is `entire-bound-device`; the concrete task goal is the completion boundary. Require an exact customer device ID and one connected-session authorization lease before input. Each input reads only the cached gate: connected, authorization active, Agent owns control, no latched stop. Live device/connection/stop verifiers run at initial mapping, accepted observations, explicit events, and reconnect—not per input.
 
-For password, OTP, payment approval, UAC credential, or private-value entry, pause Agent input and let the customer take control. After handback, take one fresh observation and remap focus; reuse the lease while connection and target remain intact. The Agent can then create/configure/test an API key while keeping the full secret out of model output and logs and clearing task clipboard/temporary traces.
+For private input, pre-register a return expectation and optional reversible continuation, then pause Agent input. An approved customer-done event calls `signalUserInputComplete`; `resumeAndContinue` performs a short debounce, cheap window check, one screenshot-free 400-character observation, and eligible continuation inside the runtime. Stable success consumes no extra model roundtrip; mismatches return for diagnosis. Keep secrets out of model/log output and clear task traces.
 
 A disconnect revokes the lease. Resume only on the same device with fresh authorization, complete remapping, and reconciliation from the last verified checkpoint. A conflicting device identity or emergency stop latches the session stopped.
 

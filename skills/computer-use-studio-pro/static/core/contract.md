@@ -17,7 +17,7 @@
 - Use absolute coordinates only with fresh display and window geometry.
 - Never include a consequential terminal action, authentication boundary, or security prompt in a local transaction.
 - In remote mode, establish an authorization lease only after the connected window/device lock is verified. Before each action, read the cached lease gate: connected session, active authorization, Agent control ownership, and no latched stop. Re-evaluate remote connection/device/stop signals on observations and explicit runtime events; avoid a remote verifier roundtrip per input. Disconnect, emergency stop, or a target-lock mismatch revokes input authorization.
-- Customer credential entry is a control handoff rather than a new authorization cycle: pause Agent input, keep the intact connected lease, then take one fresh observation and remap focus when Agent control resumes.
+- Customer credential entry is a control handoff rather than a new authorization cycle. Keep the intact lease; require an explicit matching completion event before Agent input. A prepared return expectation may drive one compact screenshot-free observation and optional verified low-risk continuation in the same runtime call. A mismatch returns to diagnosis without the continuation.
 
 ## Verification
 

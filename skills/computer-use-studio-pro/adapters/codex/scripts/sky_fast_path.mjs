@@ -539,6 +539,7 @@ export function createPersistentWindowSession(sky, options = {}) {
   }
   const maxBurstActions = options.maxBurstActions ?? 3;
   const maxSamePathAttempts = options.maxSamePathAttempts ?? 2;
+  const defaultHandoffSettleMs = options.handoffSettleMs ?? 350;
   const screenshotOnSemanticChange = options.screenshotOnSemanticChange ?? mode === "remote-fast-fix";
   const observationLeaseMs = Object.freeze({
     coordinate: options.coordinateLeaseMs ?? (mode === "remote-fast-fix" ? 15_000 : 30_000),
@@ -550,6 +551,9 @@ export function createPersistentWindowSession(sky, options = {}) {
   }
   if (!Number.isInteger(maxSamePathAttempts) || maxSamePathAttempts < 1) {
     throw new Error("maxSamePathAttempts must be a positive integer");
+  }
+  if (!Number.isInteger(defaultHandoffSettleMs) || defaultHandoffSettleMs < 0 || defaultHandoffSettleMs > 2_000) {
+    throw new Error("handoffSettleMs must be an integer from 0 to 2000");
   }
   for (const [kind, duration] of Object.entries(observationLeaseMs)) {
     if (!(duration === Infinity || (Number.isFinite(duration) && duration >= 0))) {
@@ -570,6 +574,8 @@ export function createPersistentWindowSession(sky, options = {}) {
   let sessionStatus = mode === "local" ? "initializing" : "pending-authorization";
   let controlOwner = mode === "local" ? "agent" : "pending";
   let lastControlHandoff = null;
+  let pendingHandoffPlan = null;
+  let handoffSequence = 0;
   let stopLatched = false;
   let emergencyStopped = false;
   let stopReason = "";
@@ -958,7 +964,8 @@ export function createPersistentWindowSession(sky, options = {}) {
     });
     const changes = result.state?.window ? acceptState(result.state) : {};
     let visual = null;
-    if (!result.ok && (result.state?.screenshots?.length ?? 0) === 0) {
+    if (!result.ok && (result.state?.screenshots?.length ?? 0) === 0
+        && transactionOptions.promoteFailureScreenshot !== false) {
       visual = await observe("failure", { needles: transactionOptions.needles });
       result.diagnostic = visual.summary;
     } else if (result.ok && (result.state?.screenshots?.length ?? 0) === 0
@@ -1045,16 +1052,99 @@ export function createPersistentWindowSession(sky, options = {}) {
     return snapshot();
   }
 
-  function pauseForUserInput(reason = "user-credential-entry") {
+  function validateHandoffSteps(steps) {
+    if (steps == null) return;
+    if (!Array.isArray(steps) || steps.length > maxBurstActions) {
+      throw new Error(`Prepared handoff continuation must contain 0-${maxBurstActions} actions`);
+    }
+    for (let index = 0; index < steps.length; index += 1) {
+      if (steps[index]?.expect == null) throw new Error(`Prepared handoff step ${index} requires an explicit postcondition`);
+      if (usesCoordinates(steps[index])) throw new Error(`Prepared handoff step ${index} must use a semantic or focused-keyboard route`);
+    }
+  }
+
+  function pauseForUserInput(reason = "user-credential-entry", handoffOptions = {}) {
     if (mode !== "remote-fast-fix") throw new Error("pauseForUserInput applies only to remote-fast-fix sessions");
     assertInputAllowed();
+    if (handoffOptions == null || typeof handoffOptions !== "object" || Array.isArray(handoffOptions)) {
+      throw new Error("pauseForUserInput handoff options must be an object");
+    }
+    validateHandoffSteps(handoffOptions.steps);
+    if (handoffOptions.buildSteps != null && typeof handoffOptions.buildSteps !== "function") {
+      throw new Error("handoff buildSteps must be a function");
+    }
+    if (handoffOptions.transactionOptions != null
+        && (typeof handoffOptions.transactionOptions !== "object" || Array.isArray(handoffOptions.transactionOptions))) {
+      throw new Error("handoff transactionOptions must be an object");
+    }
+    const settleMs = handoffOptions.settleMs ?? defaultHandoffSettleMs;
+    if (!Number.isInteger(settleMs) || settleMs < 0 || settleMs > 2_000) {
+      throw new Error("handoff settleMs must be an integer from 0 to 2000");
+    }
+    const handoffId = `handoff-${++handoffSequence}`;
+    pendingHandoffPlan = {
+      id: handoffId,
+      returnExpect: handoffOptions.returnExpect ?? null,
+      steps: handoffOptions.steps ?? null,
+      buildSteps: handoffOptions.buildSteps ?? null,
+      transactionOptions: handoffOptions.transactionOptions ?? {},
+      settleMs,
+      completionSignaled: false,
+      signalSource: null,
+      signaledAt: null,
+    };
     controlOwner = "user";
     lastControlHandoff = {
+      id: handoffId,
       reason: compactText(reason, 240),
       paused_at: new Date().toISOString(),
       resumed_at: null,
+      completion_signaled: false,
+      fast_resume_ready: pendingHandoffPlan.returnExpect != null,
+      continuation_steps: pendingHandoffPlan.steps?.length ?? (pendingHandoffPlan.buildSteps ? "dynamic" : 0),
     };
     return snapshot();
+  }
+
+  function signalUserInputComplete(signal = {}) {
+    if (mode !== "remote-fast-fix") throw new Error("signalUserInputComplete applies only to remote-fast-fix sessions");
+    if (controlOwner !== "user" || !pendingHandoffPlan) throw new Error("No active customer-input handoff is waiting");
+    const normalized = typeof signal === "string" ? { source: signal } : signal;
+    if (normalized == null || typeof normalized !== "object" || Array.isArray(normalized)) {
+      throw new Error("handoff completion signal must be a string or object");
+    }
+    if (normalized.handoffId != null && String(normalized.handoffId) !== pendingHandoffPlan.id) {
+      throw new Error("handoff completion signal does not match the active handoff");
+    }
+    pendingHandoffPlan.completionSignaled = true;
+    pendingHandoffPlan.signalSource = compactText(normalized.source ?? "explicit-event", 80);
+    pendingHandoffPlan.signaledAt = currentTime();
+    if (lastControlHandoff) {
+      lastControlHandoff.completion_signaled = true;
+      lastControlHandoff.signal_source = pendingHandoffPlan.signalSource;
+    }
+    return {
+      handoff_id: pendingHandoffPlan.id,
+      completion_signaled: true,
+      control_owner: controlOwner,
+    };
+  }
+
+  async function fastWindowBindingCheck(enabled = true) {
+    if (!enabled || typeof sky.list_windows !== "function") return { checked: false, ok: true, calls: 0 };
+    const windows = await sky.list_windows();
+    if (!Array.isArray(windows)) throw new Error("sky.list_windows must return an array");
+    const match = windows.find((candidate) => (
+      String(candidate?.id) === String(window?.id)
+      && (!expectedApp || String(candidate?.app ?? "") === expectedApp)
+    ));
+    return { checked: true, ok: Boolean(match), calls: 1 };
+  }
+
+  function completeControlHandoff() {
+    controlOwner = "agent";
+    if (lastControlHandoff) lastControlHandoff.resumed_at = new Date().toISOString();
+    pendingHandoffPlan = null;
   }
 
   async function resumeAgentControl(observeOptions = {}) {
@@ -1068,13 +1158,128 @@ export function createPersistentWindowSession(sky, options = {}) {
       ...observeOptions,
       include_screenshot: observeOptions.include_screenshot ?? true,
     });
-    controlOwner = "agent";
-    if (lastControlHandoff) lastControlHandoff.resumed_at = new Date().toISOString();
+    completeControlHandoff();
     return {
       ...result,
       authorization_check_mode: "session-lease",
       control_owner: controlOwner,
       user_handoff_resumed: true,
+    };
+  }
+
+  async function resumeAndContinue(resumeOptions = {}) {
+    if (mode !== "remote-fast-fix") throw new Error("resumeAndContinue applies only to remote-fast-fix sessions");
+    if (stopLatched || emergencyStopped) throw new Error("Remote session is stopped");
+    if (authorizationStatus !== "active" || sessionStatus !== "connected") {
+      throw new Error("The connected authorization lease is not active");
+    }
+    if (controlOwner !== "user" || !pendingHandoffPlan) throw new Error("Remote control is not paused for user input");
+    if (resumeOptions.userInputComplete === true && !pendingHandoffPlan.completionSignaled) {
+      signalUserInputComplete({ source: resumeOptions.signalSource ?? "direct-runtime-event", handoffId: pendingHandoffPlan.id });
+    }
+    if (!pendingHandoffPlan.completionSignaled) throw new Error("An explicit customer handback event is required before fast resume");
+
+    const started = Date.now();
+    const plan = pendingHandoffPlan;
+    const settleMs = resumeOptions.settleMs ?? plan.settleMs;
+    if (!Number.isInteger(settleMs) || settleMs < 0 || settleMs > 2_000) {
+      throw new Error("resume settleMs must be an integer from 0 to 2000");
+    }
+    if (settleMs > 0) await new Promise((resolve) => setTimeout(resolve, settleMs));
+
+    const windowCheck = await fastWindowBindingCheck(resumeOptions.verifyWindowList !== false);
+    if (!windowCheck.ok) {
+      markDisconnected("handoff-window-missing-or-changed");
+      pendingHandoffPlan = null;
+      return withSessionMeta({
+        ok: false,
+        outcome: "handoff-window-mismatch",
+        reason: "The bound remote-client window is missing or changed",
+        state,
+        summary: state ? compactState(state, { maxChars: 400 }) : null,
+        metrics: {
+          actions: 0, observations: 0, sky_calls: windowCheck.calls,
+          duration_ms: Date.now() - started, compact_chars: 0, screenshot_regions: 0,
+          handoff_settle_ms: settleMs, model_roundtrips_saved: 0,
+        },
+      });
+    }
+
+    const returnExpect = resumeOptions.expect ?? plan.returnExpect;
+    if (returnExpect == null) throw new Error("resumeAndContinue requires a prepared or supplied return expectation");
+    const observation = await observe("user-handoff-fast-return", {
+      ...(resumeOptions.observeOptions ?? {}),
+      include_screenshot: resumeOptions.include_screenshot ?? false,
+      screenshotOnSemanticChange: false,
+      maxChars: resumeOptions.maxChars ?? 400,
+      screenshotLimit: resumeOptions.include_screenshot === true ? 1 : 0,
+    });
+    const returnCheck = expectationResult(observation.state, returnExpect);
+    if (!returnCheck.ok) {
+      completeControlHandoff();
+      observation.metrics.sky_calls += windowCheck.calls;
+      observation.metrics.duration_ms = Date.now() - started;
+      observation.metrics.handoff_settle_ms = settleMs;
+      observation.metrics.model_roundtrips_saved = 0;
+      return {
+        ...observation,
+        ok: false,
+        outcome: "handoff-expectation-mismatch",
+        reason: returnCheck.reason,
+        user_handoff_resumed: true,
+        continuation_executed: false,
+      };
+    }
+
+    completeControlHandoff();
+    let steps = resumeOptions.steps ?? plan.steps;
+    let transactionOptions = { ...plan.transactionOptions, ...(resumeOptions.transactionOptions ?? {}) };
+    if (plan.buildSteps || resumeOptions.buildSteps) {
+      const built = await (resumeOptions.buildSteps ?? plan.buildSteps)(observation.state, {
+        handoff_id: plan.id,
+        operation_scope: operationScope,
+      });
+      if (Array.isArray(built)) steps = built;
+      else if (built && typeof built === "object") {
+        steps = built.steps ?? steps;
+        transactionOptions = { ...transactionOptions, ...(built.transactionOptions ?? {}) };
+      }
+    }
+    validateHandoffSteps(steps);
+
+    if (!steps?.length) {
+      rememberVerifiedCheckpoint("handoff-resume", observation.state);
+      observation.metrics.sky_calls += windowCheck.calls;
+      observation.metrics.duration_ms = Date.now() - started;
+      observation.metrics.handoff_settle_ms = settleMs;
+      observation.metrics.model_roundtrips_saved = 1;
+      return {
+        ...observation,
+        ok: true,
+        outcome: "handoff-resumed-verified",
+        user_handoff_resumed: true,
+        continuation_executed: false,
+      };
+    }
+
+    const continued = await transaction(steps, {
+      ...transactionOptions,
+      risk: transactionOptions.risk ?? "reversible",
+      maxChars: transactionOptions.maxChars ?? 400,
+      screenshotLimit: transactionOptions.screenshotLimit ?? 0,
+      screenshotOnSemanticChange: false,
+      promoteFailureScreenshot: false,
+    });
+    mergeMetrics(continued.metrics, observation.metrics);
+    continued.metrics.sky_calls += windowCheck.calls;
+    continued.metrics.duration_ms = Date.now() - started;
+    continued.metrics.handoff_settle_ms = settleMs;
+    continued.metrics.model_roundtrips_saved = continued.ok ? 1 : 0;
+    return {
+      ...continued,
+      outcome: continued.ok ? "handoff-continued-verified" : continued.outcome,
+      user_handoff_resumed: true,
+      continuation_executed: true,
     };
   }
 
@@ -1210,6 +1415,7 @@ export function createPersistentWindowSession(sky, options = {}) {
       recovery_required: ["stalled", "disconnected", "connected-unauthorized", "rebinding"].includes(sessionStatus),
       last_verified_checkpoint: lastVerifiedCheckpoint,
       last_control_handoff: lastControlHandoff,
+      handoff_pending: Boolean(pendingHandoffPlan),
       summary: state ? compactState(state, summaryOptions) : null,
     };
   }
@@ -1227,7 +1433,9 @@ export function createPersistentWindowSession(sky, options = {}) {
     markDisconnected,
     emergencyStop,
     pauseForUserInput,
+    signalUserInputComplete,
     resumeAgentControl,
+    resumeAndContinue,
     resumeAfterReconnect,
     rebind,
     waitUntil,
@@ -2103,6 +2311,7 @@ export async function selfTest() {
   const leaseChecksAtInputs = [];
   const leasedSky = {
     ...mockSky,
+    async list_windows() { return [window]; },
     async type_text(input) {
       leaseChecksAtInput = { ...leaseChecks };
       leaseChecksAtInputs.push({ ...leaseChecks });
@@ -2165,6 +2374,59 @@ export async function selfTest() {
   if (!leasedBurst.ok || !leasedBurst.verified || burstInputChecks.length !== 2
       || burstInputChecks.some((entry) => JSON.stringify(entry) !== JSON.stringify(checksBeforeBurst))) {
     throw new Error("remote keyboard burst re-ran live verifiers between cached-gate inputs");
+  }
+
+  const checksBeforeFastHandoff = { ...leaseChecks };
+  let coordinateHandoffRejected = false;
+  try {
+    leased.pauseForUserInput("bad-coordinate-plan", {
+      returnExpect: { includes: "user-complete" },
+      steps: [{ method: "click", args: { x: 1, y: 1, screenshotId: "old" }, expect: { includes: "done" } }],
+    });
+  } catch { coordinateHandoffRejected = true; }
+  if (!coordinateHandoffRejected || leased.snapshot().control_owner !== "agent") {
+    throw new Error("fast handoff accepted a pre-handoff coordinate or changed ownership after validation failure");
+  }
+  const fastPaused = leased.pauseForUserInput("user-types-private-value", {
+    returnExpect: { includes: "user-complete" },
+    settleMs: 0,
+    steps: [
+      { method: "type_text", args: { text: "fast-resume-action" }, expect: { includes: "fast-resume-action" } },
+    ],
+  });
+  if (!fastPaused.handoff_pending || !fastPaused.last_control_handoff?.fast_resume_ready) {
+    throw new Error("fast handoff plan was not retained in the persistent session");
+  }
+  let missingHandoffSignalRejected = false;
+  try { await leased.resumeAndContinue({ settleMs: 0 }); } catch { missingHandoffSignalRejected = true; }
+  if (!missingHandoffSignalRejected || leased.snapshot().control_owner !== "user") {
+    throw new Error("fast resume accepted control before an explicit handback signal");
+  }
+  value = "user-complete";
+  const handoffSignal = leased.signalUserInputComplete({ source: "self-test-button", handoffId: fastPaused.last_control_handoff.id });
+  if (!handoffSignal.completion_signaled || handoffSignal.control_owner !== "user") {
+    throw new Error("customer handback signal was not latched");
+  }
+  const fastResumed = await leased.resumeAndContinue({ settleMs: 0 });
+  const fastTokenView = tokenView(fastResumed, { maxChars: 400 });
+  if (!fastResumed.ok || fastResumed.outcome !== "handoff-continued-verified"
+      || fastResumed.metrics.model_roundtrips_saved !== 1 || fastResumed.metrics.screenshot_regions !== 0
+      || fastResumed.control_owner !== "agent" || leased.snapshot().handoff_pending
+      || leaseChecks.authorization !== checksBeforeFastHandoff.authorization
+      || leaseChecks.connection !== checksBeforeFastHandoff.connection + 3
+      || leaseChecks.device !== checksBeforeFastHandoff.device + 3
+      || leaseChecks.stop !== checksBeforeFastHandoff.stop + 3
+      || "state" in fastTokenView || JSON.stringify(fastTokenView).length > 1000) {
+    throw new Error(`event-driven token-compact handoff resume failed: ${JSON.stringify({
+      ok: fastResumed.ok,
+      outcome: fastResumed.outcome,
+      metrics: fastResumed.metrics,
+      owner: fastResumed.control_owner,
+      pending: leased.snapshot().handoff_pending,
+      checksBeforeFastHandoff,
+      leaseChecks,
+      tokenViewChars: JSON.stringify(fastTokenView).length,
+    })}`);
   }
 
   const missingInitialDevice = createPersistentWindowSession({

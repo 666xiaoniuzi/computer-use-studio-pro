@@ -10,7 +10,7 @@ Establish once before input:
 client/window | exact customer device ID | entire-bound-device | concrete goal | success evidence | authorization/takeover boundary
 ```
 
-Default operation scope is `entire-bound-device`: every desktop, drive, setting, application, terminal, service, network component, and registry area inside the locked device. The concrete requested result is the completion boundary. Default autonomous mutation budget is reversible `L1`, 20 mutations, 30 minutes, and two attempts per identical `failure signature + strategy`; host confirmation rules apply at higher-impact boundaries.
+Default operation scope is `entire-bound-device`: every desktop, drive, setting, application, terminal, service, network component, and registry area inside the locked device. The requested result is the completion boundary. Default autonomous mutation budget is reversible `L1`, 20 mutations, 30 minutes, and two attempts per identical `failure signature + strategy`; host confirmation rules apply at higher-impact boundaries.
 
 ## One-session fast path
 
@@ -45,15 +45,15 @@ Retain at most four unresolved/recent events. Use `needles` to select relevant t
 - Each input reads only cached state: `connected`, authorization active, `control_owner=agent`, and no latched stop. Remote verifiers run at initial mapping, accepted observations, explicit client events, and reconnect rather than before every input.
 - After initial binding, a temporarily hidden device ID retains the established baseline. A newly visible conflicting labeled device ID, wrong window/app/title, emergency stop, or target-lock mismatch latches `stopped` and revokes input.
 - A disconnect revokes the lease and freezes mutations. Reconnect only to the same device, obtain fresh authorization, capture a complete view, reconcile committed effects, and continue from the first unmet postcondition.
-- For password, OTP, payment approval, UAC credential, or private value, call `pauseForUserInput`; the customer types while Agent input is paused. Call `resumeAgentControl` after handback. It takes one fresh view and remaps focus while retaining the lease when connection and target are unchanged.
+- Before private input, pause with `returnExpect` and optional reversible continuation. An approved non-model completion event calls `signalUserInputComplete` then `resumeAndContinue`: short debounce, cheap binding check, one screenshot-free 400-character observation, and continuation only on a match. Stable success preserves the lease and saves one model roundtrip; mismatch returns compact evidence.
 
 ### API acquisition after customer handoff
 
 Use this fixed sequence to avoid extra planning turns:
 
 ```text
-open provider console -> pause for password/OTP/payment -> customer handback
--> refresh once -> create named API key -> configure target app -> minimal connectivity test
+open provider console -> pre-register return state -> pause for password/OTP/payment
+-> customer-done event -> compact resumeAndContinue -> create/configure/test API key
 -> report masked key fingerprint/status -> clear task clipboard and temporary traces
 ```
 

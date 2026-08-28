@@ -49,7 +49,7 @@ Cross-agent support means that the workflow and adapters are portable. It does n
 | --- | --- |
 | One Skill, two modes | Defaults to `local`; loads `remote-fast-fix` for ToDesk/Sunlogin tasks while sharing the same executor. |
 | Session authorization lease and device lock | Confirms once at connection setup and reuses the lease; disconnect, customer stop, or device change revokes input authorization. |
-| Customer credential handoff | Pauses Agent input while retaining the lease; refreshes once and resumes after the customer finishes. |
+| Event-driven customer handback | Retains the lease while paused; a completion event runs compact verification and an eligible prepared continuation, saving one model roundtrip on the stable path. |
 | Full-device operation surface | Remote mode covers the bound customer's whole desktop, drives, settings, applications, terminals, services, network, and registry; the concrete task goal defines completion. |
 | Reconnect and resume | After same-device reconnection and fresh authorization, remaps the full view and continues from the last verified checkpoint. |
 | Fast paths | Reduces unnecessary model roundtrips for deterministic, low-risk, reversible steps. |
@@ -68,6 +68,8 @@ Install and invoke only `computer-use-studio-pro`. It has two mutually exclusive
 Writing `$computer-use-studio-pro` explicitly is optional. Natural-language requests to control the local computer, operate a visible application, use Computer Use, or control another computer through ToDesk, Sunlogin, or another remote desktop client automatically invoke this Skill and route to `local` or `remote-fast-fix`. When the remote OS is omitted, the initial complete observation identifies it.
 
 Whenever a task actually uses Computer Use or `@oai/sky`, load this Skill first, then read the host Computer Use API guidance, and import `adapters/codex/scripts/sky_fast_path.mjs` into the same persistent runtime. Ordinary low-risk reversible work in an explicit task uses one task-wide authorization, one window binding, and compact observations. Add model roundtrips only for new decisions, unexpected branches, risk boundaries, or terminal verification. Runtime execution uses the installed local bundle rather than re-downloading GitHub for every task.
+
+Version 0.7.2 adds event-driven customer handback. Before pausing, it stores a return expectation and optional continuation; the completion event runs a short debounce, window-lock check, one screenshot-free 400-character observation, and verified continuation on a match inside the persistent runtime. The stable path saves one model roundtrip. Default local/remote instruction chains shrink again to 18,071/26,201 bytes, so the default instruction-token proxy does not increase.
 
 Version 0.7.1 reduces the default load chain to a slim entrypoint, one compact core, one adapter, and the active surface fragment; detailed workflow and recovery rules are loaded only when needed. `tokenView` retains full observations in the persistent runtime and returns a redacted short view from the same execution cell. Measured as UTF-8 file bytes, the default local instruction chain drops from 33,334 to 18,172 (45.5%), and the remote chain from 48,431 to 26,205 (45.9%). This is an instruction-size proxy; actual billing depends on host token accounting.
 
@@ -93,7 +95,7 @@ task-goal boundary: diagnose, repair, and verify the stated goal; success eviden
 cleanup: task-generated-nonessential; verify remote cleanup before disconnect, then verify local-controller cleanup.
 ```
 
-Remote mode creates one persistent Computer Use / `@oai/sky` session and reuses one remote-window lease. The whole customer computer inside that window is the default operation surface; network, proxy, Git, certificate, and DNS items are diagnostic examples rather than a subsystem allowlist. After connection and device-lock validation, it activates one authorization lease. Before each input it reads only cached in-process session state. Live remote signals are evaluated at observation, client-event, and reconnect boundaries. For a customer-entered password, OTP, or UAC credential, Agent input pauses while the lease stays active; one fresh observation and focus remap resumes control. A disconnect freezes input. After reconnecting the same device and receiving fresh authorization, it takes a complete observation and resumes from the last verified checkpoint.
+Remote mode creates one persistent Computer Use / `@oai/sky` session and reuses one remote-window lease. The whole customer computer inside that window is the default operation surface; network, proxy, Git, certificate, and DNS items are diagnostic examples rather than a subsystem allowlist. After connection and device-lock validation, it activates one authorization lease. Before each input it reads only cached in-process session state. Live signals are evaluated at observation, client-event, and reconnect boundaries. Before customer-entered credentials, the Agent records the expected return state and pauses; a completion event runs screenshot-free compact verification and an eligible prepared continuation. Disconnect freezes input; same-device reconnection uses fresh authorization and resumes from the last verified checkpoint.
 
 ## 5. Installation
 

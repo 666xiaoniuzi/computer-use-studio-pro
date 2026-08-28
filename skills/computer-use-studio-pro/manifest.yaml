@@ -1,10 +1,11 @@
 name: computer-use-studio-pro
-version: 0.7.1
+version: 0.7.2
 description: >
   Automatically invoked single-Skill router for token-efficient local and
   remote computer control with a persistent runtime, compact result views,
   fresh observation leases, ToDesk/Sunlogin device locking, continuous
-  connected-session authorization, verified execution, and cleanup.
+  connected-session authorization, event-driven customer handback, verified
+  execution, and cleanup.
 always_load:
   - static/core/fast-contract.md
 profiles:
