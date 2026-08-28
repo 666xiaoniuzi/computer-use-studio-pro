@@ -1,14 +1,12 @@
 name: computer-use-studio-pro
-version: 0.7.0
+version: 0.7.1
 description: >
-  Automatically invoked Single-Skill router for natural-language local or
-  remote computer-control requests and every Computer Use or @oai/sky task,
-  with single-refresh focused keyboard bursts, lightweight window lifecycle
-  checks, fresh observation leases, local ToDesk/Sunlogin signal parsing,
-  verified local control, and same-device reconnect recovery.
+  Automatically invoked single-Skill router for token-efficient local and
+  remote computer control with a persistent runtime, compact result views,
+  fresh observation leases, ToDesk/Sunlogin device locking, continuous
+  connected-session authorization, verified execution, and cleanup.
 always_load:
-  - static/core/contract.md
-  - static/core/workflow.md
+  - static/core/fast-contract.md
 profiles:
   default: local
   values:
@@ -35,13 +33,17 @@ axes:
     multi: true
 references:
   on_demand:
+    - condition: long, cross-application, resumed, failure-prone, or measured execution
+      path: static/core/workflow.md
+    - condition: detailed authority, verification, recovery, or concurrency rules are needed
+      path: static/core/contract.md
     - condition: remote-fast-fix mode and an active diagnostic branch needs detailed checks
       path: references/remote/rapid-playbook.md
     - condition: a policy MCP or controlled customer-side executor is being designed or used
       path: references/remote/policy-executor-contract.md
-    - condition: consequential action, data transfer, authentication, permission boundary, prompt injection, repeated failure, rollback, or multi-agent coordination
+    - condition: consequential action, data transfer, authentication, permission boundary, suspicious screen instruction, repeated failure, rollback, or multi-agent coordination
       path: references/safety-recovery.md
-    - condition: latency or token optimization, benchmark, regression comparison, or performance report
+    - condition: latency or token benchmark, regression comparison, or performance claim
       path: references/performance-evaluation.md
 helpers:
   task_artifacts: scripts/task_artifacts.py

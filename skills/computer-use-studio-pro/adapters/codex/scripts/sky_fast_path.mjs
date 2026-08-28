@@ -51,12 +51,12 @@ function topScreenshot(state) {
   return [...(state?.screenshots ?? [])].sort((a, b) => (a?.zIndex ?? 0) - (b?.zIndex ?? 0)).at(-1);
 }
 
-function selectedTreeLines(tree, needles, limit) {
+function selectedTreeLines(tree, needles, limit, maxLines = 20) {
   const lines = String(tree ?? "").split(/\r?\n/).filter(Boolean);
   const wanted = (needles ?? []).map(String).filter(Boolean);
   const selected = wanted.length
     ? lines.filter((line) => wanted.some((needle) => line.includes(needle)))
-    : lines.slice(0, 40);
+    : lines.slice(0, maxLines);
   return capped(selected.map(redactText).join("\n"), limit);
 }
 
@@ -66,11 +66,17 @@ function compactText(value, limit) {
 
 export function compactState(state, options = {}) {
   if (typeof options === "number") options = { maxChars: options };
-  const maxChars = options.maxChars ?? 1800;
+  const maxChars = Math.max(240, options.maxChars ?? 900);
+  const titleChars = options.titleChars ?? Math.min(160, Math.max(80, Math.floor(maxChars * 0.16)));
+  const focusChars = options.focusChars ?? Math.min(180, Math.max(80, Math.floor(maxChars * 0.18)));
+  const selectedChars = options.selectedChars ?? Math.min(160, Math.max(60, Math.floor(maxChars * 0.14)));
+  const documentChars = options.documentChars ?? Math.max(100, Math.floor(maxChars * 0.36));
+  const treeChars = options.treeChars ?? Math.max(120, Math.floor(maxChars * 0.46));
+  const screenshotLimit = Math.max(0, Math.min(2, options.screenshotLimit ?? 1));
   const accessibility = state?.accessibility ?? {};
-  const screenshots = [...(state?.screenshots ?? [])]
-    .sort((a, b) => (a?.zIndex ?? 0) - (b?.zIndex ?? 0))
-    .slice(-2)
+  const orderedScreenshots = [...(state?.screenshots ?? [])]
+    .sort((a, b) => (a?.zIndex ?? 0) - (b?.zIndex ?? 0));
+  const screenshots = (screenshotLimit === 0 ? [] : orderedScreenshots.slice(-screenshotLimit))
     .map((item) => ({
       id: item?.id,
       z: item?.zIndex,
@@ -81,14 +87,65 @@ export function compactState(state, options = {}) {
     }));
   return {
     window: state?.window
-      ? { id: state.window.id, app: state.window.app, title: compactText(state.window.title, 200) }
+      ? { id: state.window.id, app: state.window.app, title: compactText(state.window.title, titleChars) }
       : null,
-    focused_element: compactText(accessibility.focused_element, 240),
-    selected_text: compactText(accessibility.selected_text, 240),
-    document_text: compactText(accessibility.document_text, Math.floor(maxChars / 2)),
-    tree: selectedTreeLines(accessibility.tree, options.needles, maxChars),
+    focused_element: compactText(accessibility.focused_element, focusChars),
+    selected_text: compactText(accessibility.selected_text, selectedChars),
+    document_text: compactText(accessibility.document_text, documentChars),
+    tree: selectedTreeLines(accessibility.tree, options.needles, treeChars, options.maxTreeLines ?? 20),
     screenshots,
   };
+}
+
+function definedEntries(value) {
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined && item !== null));
+}
+
+/**
+ * Return a small, redacted result envelope while the caller retains raw state
+ * in the persistent kernel. Make this the final node_repl expression to avoid
+ * emitting the full observation/result object to the model.
+ */
+export function tokenView(result, options = {}) {
+  if (result == null) return { ok: false, outcome: "empty" };
+  const state = result?.state ?? (
+    result?.window && (result?.accessibility || result?.screenshots) ? result : null
+  );
+  const summary = state
+    ? compactState(state, options)
+    : (result?.summary ?? null);
+  const metrics = result?.metrics ? definedEntries({
+    actions: result.metrics.actions,
+    observations: result.metrics.observations,
+    sky_calls: result.metrics.sky_calls,
+    duration_ms: result.metrics.duration_ms,
+    compact_chars: result.metrics.compact_chars,
+    screenshot_regions: result.metrics.screenshot_regions,
+    saved_observations: result.metrics.saved_observations,
+  }) : null;
+  const changes = result?.changes == null
+    ? null
+    : compactText(typeof result.changes === "string" ? result.changes : JSON.stringify(result.changes), options.changeChars ?? 360);
+  return definedEntries({
+    ok: result?.ok,
+    outcome: result?.outcome,
+    session_status: result?.session_status,
+    authorization_status: result?.authorization_status,
+    control_owner: result?.control_owner,
+    operation_scope: result?.operation_scope,
+    success_verified: result?.success_verified,
+    completed: result?.completed,
+    failed_step: result?.failed_step,
+    attempts: result?.attempts,
+    pivot_required: result?.pivot_required,
+    reused: result?.reused,
+    promoted_screenshot: result?.promoted_screenshot,
+    input_lease: result?.input_lease,
+    reason: result?.reason ? compactText(result.reason, options.reasonChars ?? 240) : null,
+    changes,
+    summary,
+    metrics,
+  });
 }
 
 function stateText(state) {
@@ -1967,6 +2024,21 @@ export async function selfTest() {
   const redacted = compactState({ window, accessibility: { focused_element: "Edit", document_text: "token=abc123456789 and Bearer abcdefghijklmnop; user@example.com; +86 138 0013 8000", tree: "Edit token=abc123456789" }, screenshots: [] });
   if (JSON.stringify(redacted).includes("abc123456789") || JSON.stringify(redacted).includes("abcdefghijklmnop") || JSON.stringify(redacted).includes("user@example.com") || JSON.stringify(redacted).includes("138 0013 8000")) {
     throw new Error("compact-state redaction self-test failed");
+  }
+  const tokenState = {
+    window,
+    accessibility: { focused_element: "Edit", document_text: `token=abc123456789 ${"x".repeat(2000)}`, tree: "Edit\nButton Save" },
+    screenshots: [
+      { id: "old", zIndex: 0, width: 10, height: 10, originX: 0, originY: 0 },
+      { id: "top", zIndex: 1, width: 10, height: 10, originX: 0, originY: 0 },
+    ],
+  };
+  const compactTokenView = tokenView({ ok: true, state: tokenState, metrics: { actions: 1, observation_chars: 9999, compact_chars: 500 } }, { maxChars: 400 });
+  const noScreenshotState = compactState(tokenState, { maxChars: 400, screenshotLimit: 0 });
+  const tokenJson = JSON.stringify(compactTokenView);
+  if ("state" in compactTokenView || tokenJson.includes("abc123456789") || tokenJson.includes("observation_chars")
+      || compactTokenView.summary.screenshots.length !== 1 || noScreenshotState.screenshots.length !== 0) {
+    throw new Error("token-view compaction self-test failed");
   }
   let rejected = false;
   try { await runVerifiedTransaction(mockSky, observation, [{ method: "click", args: { element_index: 13 }, expect: { includes: "Edit" } }], { transactionClass: "local-reversible", risk: "consequential" }); } catch { rejected = true; }

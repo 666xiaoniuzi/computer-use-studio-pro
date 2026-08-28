@@ -53,6 +53,7 @@ Cross-agent support means that the workflow and adapters are portable. It does n
 | Full-device operation surface | Remote mode covers the bound customer's whole desktop, drives, settings, applications, terminals, services, network, and registry; the concrete task goal defines completion. |
 | Reconnect and resume | After same-device reconnection and fresh authorization, remaps the full view and continues from the last verified checkpoint. |
 | Fast paths | Reduces unnecessary model roundtrips for deterministic, low-risk, reversible steps. |
+| Token-compact path | Loads a slim core by default and uses `tokenView` to keep full observations in the persistent runtime while emitting an approximately 900-character redacted decision view. |
 | UI recovery | Handles focus loss, loading, modals, stale coordinates, DPI, and multi-monitor changes. |
 | Semantic first | Prefers APIs, file structures, DOM, accessibility, shortcuts, and direct values before OCR or coordinates. |
 | Result verification | Requires observable completion evidence; reports `unknown` rather than claiming unverified success. |
@@ -67,6 +68,8 @@ Install and invoke only `computer-use-studio-pro`. It has two mutually exclusive
 Writing `$computer-use-studio-pro` explicitly is optional. Natural-language requests to control the local computer, operate a visible application, use Computer Use, or control another computer through ToDesk, Sunlogin, or another remote desktop client automatically invoke this Skill and route to `local` or `remote-fast-fix`. When the remote OS is omitted, the initial complete observation identifies it.
 
 Whenever a task actually uses Computer Use or `@oai/sky`, load this Skill first, then read the host Computer Use API guidance, and import `adapters/codex/scripts/sky_fast_path.mjs` into the same persistent runtime. Ordinary low-risk reversible work in an explicit task uses one task-wide authorization, one window binding, and compact observations. Add model roundtrips only for new decisions, unexpected branches, risk boundaries, or terminal verification. Runtime execution uses the installed local bundle rather than re-downloading GitHub for every task.
+
+Version 0.7.1 reduces the default load chain to a slim entrypoint, one compact core, one adapter, and the active surface fragment; detailed workflow and recovery rules are loaded only when needed. `tokenView` retains full observations in the persistent runtime and returns a redacted short view from the same execution cell. Measured as UTF-8 file bytes, the default local instruction chain drops from 33,334 to 18,172 (45.5%), and the remote chain from 48,431 to 26,205 (45.9%). This is an instruction-size proxy; actual billing depends on host token accounting.
 
 Version 0.7.0 adds a local ToDesk/Sunlogin signal adapter and coordinate, focus, and semantic observation leases for high-load remote tasks. Connection, device, disconnect, and stop states are classified inside the persistent runtime; stale references are blocked before input, a newly visible conflicting device ID latches the session, and ordinary inputs still reuse the cached authorization gate.
 

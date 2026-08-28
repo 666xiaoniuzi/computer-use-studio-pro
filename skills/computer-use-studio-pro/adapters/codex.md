@@ -1,12 +1,8 @@
-# Codex adapter
+# Codex Adapter
 
-Use the Codex-approved computer, browser, connector, and file tools only. Read the selected surface fragment as well as the core rules.
+Use Codex-approved computer, browser, connector, and file tools. For Windows Computer Use, load the bundled host Computer Use API guidance, then import `adapters/codex/scripts/sky_fast_path.mjs` into the same persistent `node_repl` kernel before the first input. It wraps the approved `sky` object; it is not another input driver.
 
-On the supported Windows Computer Use runtime, `scripts/sky_fast_path.mjs` is available at `adapters/codex/scripts/sky_fast_path.mjs`. It wraps the approved persistent `sky` object; it is not a second input driver.
-
-## Mandatory Computer Use startup
-
-Whenever the task will issue Windows Computer Use input, load this adapter and import `sky_fast_path.mjs` before the first input. Loading only the bundled Computer Use API instructions is incomplete. Initialize one `@oai/sky` object and one fast-path module in the same persistent `node_repl` kernel, then reuse both for the entire task:
+## One-time startup
 
 ```js
 if (!globalThis.sky) {
@@ -18,37 +14,43 @@ if (!globalThis.cusproFastPath) {
   const os = await import("node:os");
   const { pathToFileURL } = await import("node:url");
   const homeDir = nodeRepl.homeDir || os.homedir();
-  const modulePath = path.join(
-    homeDir,
-    ".codex", "skills", "computer-use-studio-pro",
-    "adapters", "codex", "scripts", "sky_fast_path.mjs",
-  );
+  const modulePath = path.join(homeDir, ".codex", "skills", "computer-use-studio-pro", "adapters", "codex", "scripts", "sky_fast_path.mjs");
   globalThis.cusproFastPath = await import(pathToFileURL(modulePath).href);
 }
 ```
 
-Use the actual loaded Skill directory instead when Codex is configured with a non-default Skill root. Prefer `launchAndAwaitReady`, `observeCompact`, `actAndRefresh`, `runVerifiedTransaction`, `runKeyboardBurst`, `waitForWindowListState`, `fillEditable`, and `createPersistentWindowSession` over repeated raw action/observation cells. Use raw `sky` calls only for a capability the helper does not wrap or for bounded recovery, and still preserve the same persistent runtime, target lease, compact observation, explicit postcondition, and immediate refresh rules.
+Use the actual Skill root when installation differs. Reuse both globals for the whole task.
 
-Use `runKeyboardBurst` only after a current observation proves that one text field already owns focus and remains stable. It accepts two or three `press_key`/`type_text` actions, excludes navigation and pointer actions, and performs one terminal observation. Each `type_text` payload must be a non-empty, single-line literal of at most 4096 characters with no control characters; route multiline text, tabs, submission keys, and focus-changing input through the verified per-action path. Set `stabilityConfirmed: true` and `confirmationBoundary: false`; set `mutationAuthorized: true` after the applicable confirmation when Select All is followed by replacement or when Backspace/Delete removes content. Supply `finalExpect` for semantic verification, or `visualVerificationRequired: true` to return one terminal screenshot with outcome `visual-review-required`. Persistent sessions expose the same path as `session.keyboardBurst(...)` and still read the cached remote lease gate before every input.
+## Compact output discipline
 
-Use `waitForWindowListState` when the entire postcondition is that one returned window appeared or disappeared. Do not request a screenshot merely to prove window lifecycle state.
+Keep full observations/results in `globalThis`; make `tokenView` the final expression of the same cell so only the compact, redacted envelope reaches the model:
 
-For an explicit user task, treat ordinary low-risk reversible inputs across the selected local computer as one continuous task authorization. Do not request approval again for each click, keystroke, window change, or routine verification. Keep consequential actions outside fast transactions and apply the host's action-time confirmation rules.
+```js
+globalThis.last = await globalThis.session.observe("routine");
+globalThis.cusproFastPath.tokenView(globalThis.last, { maxChars: 900 });
+```
 
-- Obtain/import the runtime once and keep the same object alive for the task.
-- In ordinary local mode, start with a compact observation when accessibility data is sufficient. Use `launchAndAwaitReady` with a task-specific expectation after launching an app.
-- In `remote-fast-fix` mode, create one `createPersistentWindowSession` for the current ToDesk/Sunlogin window. Provide `targetApp`, `targetTitleIncludes`, the exact `remoteDeviceId`, `taskScope`, `success`, and either `authorizationGranted: true` or a synchronous `authorizationVerifier`. `operationScope` defaults to `entire-bound-device`, covering every desktop, drive, setting, application, terminal, service, network component, and registry area inside that locked remote device. For ToDesk/Sunlogin, create `const remoteSignals = createRemoteClientSignalAdapter(clientName, { remoteDeviceId })` and pass `connectionVerifier: remoteSignals.connectionVerifier`, `deviceVerifier: remoteSignals.deviceVerifier`, and `stopSignalVerifier: remoteSignals.stopSignalVerifier` to the session. Call `initialObserve()` once, then reuse the returned session.
-- Wire the customer's stop control to `session.emergencyStop(reason)`. A client disconnect must call `session.markDisconnected(reason)` when detected out of band; observation and runtime errors also detect common disconnect states. Both routes revoke input authorization.
-- Authorization is a connected-session lease. `session.assertInputAllowed()` reads only cached session state and never calls remote verifiers, so keyboard and pointer actions add no network/vision authorization roundtrip. Remote verifiers run on initial mapping, accepted observations, explicit client events, and reconnect.
-- For customer-entered passwords, OTPs, UAC credentials, or private values, call `session.pauseForUserInput(reason)`. It keeps authorization active while blocking Agent input. When the customer is done, call `await session.resumeAgentControl()` to take one fresh observation, remap focus, and resume the same lease.
-- Use `session.observe("routine")` for compact semantic refreshes. A semantic change is promoted to one screenshot. For an opaque remote video canvas, call `session.markContentChanged()` after a known transition. Use `layout-change`, `failure`, `coordinate`, or `verification` reasons when a fresh screenshot is required.
-- For `type_text`, require a focused editable element and use the strict post-activation stability gate. For ordinary clicks, use the light gate unless instability has been observed.
-- Persistent sessions timestamp every accepted observation. Coordinate inputs use the shortest lease, focused keyboard inputs use the focus lease, and accessibility-index inputs use the semantic lease. A `STALE_OBSERVATION_LEASE` result occurs before any input; call `session.observe("coordinate" | "routine")`, remap the target from the fresh state, and create a new action. Tune `coordinateLeaseMs`, `focusLeaseMs`, or `semanticLeaseMs` only from measured client behavior; using `Infinity` explicitly disables one class of expiry.
-- `actAndRefresh` requires an explicit expectation. Stable bursts use `runVerifiedTransaction`, or `session.transaction`, only after declaring the sequence local and reversible; the remote session caps them at three actions, reads the cached lease gate before each input, and refreshes/asserts remote state after each action. `allowUnverified` returns `observed-unverified` and never counts as task success.
-- Use `session.waitUntil(expect)` for adaptive local polling. After a remote disconnect, call `session.resumeAfterReconnect(newWindow, { reauthorize: true, reason })`; it accepts only the same locked device, captures a fresh complete view, and returns the last verified checkpoint. A device/window switch or emergency stop requires a new session.
-- Call `session.verifySuccess()` before completion. The configured `success` condition is evaluated against a fresh verification observation and `snapshot().success_verified` must be true.
-- Call `session.noteAttempt(signature, strategy)` after an ineffective path. A `pivot_required` result means the next action must use a different supported diagnosis.
-- Retain raw state inside the runtime and emit only the redacted compact summary and useful metrics.
-- The Node helper is Codex-specific. Other adapters must never import it.
+Use `maxChars: 400` for stable polling/window state, about `900` for routine decisions, and up to `1800` for ambiguity or recovery. Add `needles` to select only relevant accessibility lines. Keep screenshots only when the next decision needs pixels. Raw state remains available as `globalThis.last.state` for the next action.
 
-For Office bulk text work, the shared `scripts/ooxml_text.py` writes a new copy, verifies it, and should be visually inspected in the target application when the task requires it.
+Preferred helpers: `launchAndAwaitReady`, `observeCompact`, `actAndRefresh`, `runVerifiedTransaction`, `runKeyboardBurst`, `waitForWindowListState`, `fillEditable`, `createPersistentWindowSession`, `createRemoteClientSignalAdapter`, and `tokenView`. Use raw `sky` calls only for an uncovered capability or bounded recovery while preserving the same runtime, target lease, postcondition, refresh, and compact output.
+
+## Local execution
+
+- Treat an explicit task as continuous authorization for ordinary low-risk reversible local input. Keep host action-time confirmation boundaries for consequential actions.
+- Start with compact accessibility when sufficient. Use `launchAndAwaitReady` after launching and `waitForWindowListState` when appearance/closure is the whole postcondition.
+- `actAndRefresh` requires an explicit expectation. Use `runVerifiedTransaction` only for up to three deterministic local-reversible actions with per-step refresh/assertion.
+- `runKeyboardBurst` is limited to two or three inputs in one currently focused stable field: non-empty single-line literal typing (maximum 4096 characters), Select All, Backspace, or Delete. Declare `stabilityConfirmed: true`, `confirmationBoundary: false`, and the applicable `mutationAuthorized`; require `finalExpect` or terminal visual verification. Navigation, pointer input, submission keys, multiline/control characters, uncertain focus, and consequential work use the ordinary verified path.
+
+## Remote execution
+
+Create one `createRemoteClientSignalAdapter(clientName, { remoteDeviceId })` and one `createPersistentWindowSession` for the current ToDesk/Sunlogin window. Provide target app/title, exact device ID, task goal, success condition, authorization signal, and the adapter's connection/device/stop verifiers. `operationScope` defaults to `entire-bound-device`.
+
+Call `initialObserve()` once and reuse the session. Every input reads only its cached connected-session gate. Verifiers run on initial/accepted observations, explicit events, and reconnect. Wire customer stop to `emergencyStop`, out-of-band disconnect to `markDisconnected`, customer credential/payment takeover to `pauseForUserInput`/`resumeAgentControl`, and same-device reconnect to `resumeAfterReconnect(..., { reauthorize: true })`.
+
+Use `session.observe("routine")` for compact semantic refreshes. Call `markContentChanged()` when an opaque remote canvas changed; use `layout-change`, `failure`, `coordinate`, or `verification` when a screenshot is required. On `STALE_OBSERVATION_LEASE`, refresh the requested surface and remap before input.
+
+After a password, OTP, payment approval, UAC, or private-value handoff, `resumeAgentControl()` performs one fresh observation/focus remap and continues the same lease while the target and connection stayed intact. The Agent may then create, configure, and test an API key; emit only masked status and keep the full secret out of model/log output.
+
+Call `session.verifySuccess()` before completion and require `success_verified=true`. Use `noteAttempt(signature, strategy)` and pivot after the repeated-path guard. Keep raw session state in the kernel and return only `tokenView(...)` plus necessary metrics.
+
+For Office bulk text, `scripts/ooxml_text.py` writes and verifies a new copy; inspect it visually when the task requires visual fidelity.

@@ -1,146 +1,107 @@
 # Remote Fast Fix Mode
 
-Read this profile only after selecting `mode=remote-fast-fix`. It extends the shared Computer Use Studio Pro workflow; it is not a separate Skill and does not initialize another Computer Use runtime.
+Load this profile only when another computer is being operated through a visible remote client. It extends the single Computer Use Studio Pro runtime; it does not create another planner or input driver.
 
-## Remote task contract
+## Session contract
 
-Before input, establish these fields in one pass:
-
-```text
-remote client/window | exact customer device ID | entire-device operation surface | concrete goal
-session authorization signal | success evidence | risk ceiling | mutation/time budget | takeover boundary
-```
-
-The default operation surface is `entire-bound-device`: all desktops, drives, system settings, applications, terminals, services, network components, and registry areas inside the locked customer computer. Network, proxy, Git, certificates, DNS, or Codex settings mentioned in a prompt are starting hypotheses rather than a subsystem allowlist. Use the concrete requested outcome as the task goal and infer the obvious visible success evidence. When several remote sessions are open or different outcomes imply materially different changes, ask one concise question.
-
-Default operational budget: risk ceiling `L1`, at most 20 remote mutations, 30 minutes, and two attempts for the same `failure signature + strategy`. Host confirmation rules remain active.
-
-## Single-runtime low-latency contract
-
-1. **One runtime:** create or obtain one approved `@oai/sky` object for the task. Reuse its imports and live session through completion.
-2. **One window, device, and authorization lease:** bind the current ToDesk/Sunlogin window by app, returned handle, stable title substring, and the exact customer device ID. Activate authorization once after the initial lock passes. Validate live remote signals on accepted observations and client events; each input reads only the cached lease gate.
-3. **Lazy profile:** local rules remain the default. Load this file and only the active diagnostic section of [rapid-playbook.md](../remote/rapid-playbook.md) for remote work.
-4. **Initial map:** capture one complete initial view of the remote-client window. Record client title, remote-session identity cue, visible modal, connection state, geometry, and the first useful symptom.
-5. **Incremental observations:** after the initial map, prefer compact accessibility state, one relevant subtree, or a current crop. Promote a detected semantic change to one screenshot. When the remote client exposes only an opaque video canvas, call `session.markContentChanged()` after a known transition so the next observation includes a screenshot. Capture a new full view for layout/remote-resolution changes, failed assertions, coordinate remapping, connection recovery, or final verification.
-6. **Stable bursts:** on one unchanged low-risk page, run one to three deterministic reversible actions in `runVerifiedTransaction`; refresh and assert after every action. Return to the model only after the burst, a mismatch, or a new decision.
-7. **Adaptive waits:** use `session.waitUntil(expect)` to poll a visible or semantic condition locally. It begins with a short interval and applies bounded backoff while download, restart, spinner, or network progress remains observable.
-8. **Pivot guard:** retry a timing-sensitive path once. When the second attempt has the same failure signature and no meaningful state change, select the next supported hypothesis.
-9. **Compact ledger:** retain only `symptom | hypothesis | last action | result` plus the rollback stack and mutation count. Keep verbose raw observations inside the runtime.
-10. **Target lock:** require positive evidence for the exact customer device ID during the initial map and reconnect. On later accepted observations, keep the established binding when the client temporarily hides the ID, while treating any newly visible conflicting labeled device ID, window, application, title, or identity cue as a lock violation. A mismatch latches `stopped`, revokes authorization, and ends input for that session.
-11. **Continuous authorization lease:** activate authorization only after the initial connected state and device lock pass. Keep it active while the same connection remains intact. The per-input gate is an in-memory status read and does not call authorization, connection, device, or stop verifiers. A customer emergency stop or device-lock violation latches `stopped`; a disconnect moves to `disconnected`. Each transition revokes input authorization immediately.
-12. **Reconnect and resume:** reconnect only to the same customer device. Obtain a fresh authorization signal, bind the returned window, capture a complete observation, verify the device ID and connection state, then continue from the last verified checkpoint. Do not replay committed actions.
-13. **Customer credential handoff:** call `pauseForUserInput` before the customer types a password, OTP, UAC credential, or private value. Agent input stays paused while the connected lease remains active. Call `resumeAgentControl` after handback; it captures one fresh view and remaps focus without repeating authorization when the connection and target binding stayed intact.
-14. **Client-local signal adapter:** create one `createRemoteClientSignalAdapter("todesk" | "sunlogin", { remoteDeviceId })` and wire its three synchronous verifiers into the session. It classifies accepted ToDesk/向日葵 observations inside the JavaScript runtime, so a stable connection/device state does not add a model roundtrip.
-15. **Observation freshness:** enforce coordinate, focus, and semantic leases before input. An expired lease returns `STALE_OBSERVATION_LEASE` before the controller acts. Refresh and remap once from the requested surface; never reuse the expired action object.
-
-For Codex, use `createPersistentWindowSession` and `createRemoteClientSignalAdapter` from `adapters/codex/scripts/sky_fast_path.mjs`. Supply `mode`, `window`, `targetApp`, `targetTitleIncludes`, `remoteDeviceId`, `taskScope`, `success`, the adapter verifiers, and an authorization signal. Remote mode defaults `operationScope` to `entire-bound-device`; an explicit value may document a user-selected narrower surface. Wire customer stop to `emergencyStop`, out-of-band disconnect to `markDisconnected`, customer credential takeover to `pauseForUserInput`/`resumeAgentControl`, and same-device reconnection to `resumeAfterReconnect(..., { reauthorize: true })`. Add an identity cue or target verifier when the client exposes a stronger stable signal.
-
-The session state is one of `connected`, `stalled`, `disconnected`, `connected-unauthorized`, `rebinding`, or `stopped`. Input requires `connected`, `authorization_status=active`, and `control_owner=agent`. During credential handoff, `control_owner=user` pauses Agent input without revoking the lease. `stopped` is latched; continue by creating a new explicitly authorized session. `disconnected` may resume after same-device verification and fresh authorization.
-
-## Direct execution chain
+Establish once before input:
 
 ```text
-computer-use-studio-pro (remote-fast-fix profile)
-  -> one approved Computer Use / @oai/sky runtime
-  -> one ToDesk or Sunlogin window lease
-  -> remote Windows UI
-  -> fresh verification
+client/window | exact customer device ID | entire-bound-device | concrete goal | success evidence | authorization/takeover boundary
 ```
 
-The Skill performs planning, routing, recovery, and verification in the same control loop. Mouse, keyboard, screenshot, window, and accessibility calls come from the single host runtime.
+Default operation scope is `entire-bound-device`: every desktop, drive, setting, application, terminal, service, network component, and registry area inside the locked device. The concrete requested result is the completion boundary. Default autonomous mutation budget is reversible `L1`, 20 mutations, 30 minutes, and two attempts per identical `failure signature + strategy`; host confirmation rules apply at higher-impact boundaries.
 
-## Fast operating loop
+## One-session fast path
 
-1. Observe the bound remote window and confirm that input forwarding is responsive.
-2. Classify the current fault as `remote-input`, `network`, `account/auth`, `permissions`, `app/version`, `configuration`, or `resource/storage`.
-3. Rank at most three supported hypotheses. Choose the cheapest check that separates the leading causes.
-4. Define the postcondition, perform one low-risk repair or a verified stable burst, and refresh immediately.
-5. Compare fresh evidence with the success condition. Continue only from the observed result.
-6. Call `session.verifySuccess()` and require `success_verified=true` before cleanup and completion.
+1. Initialize one approved runtime and keep it warm.
+2. Bind one ToDesk/Sunlogin window by app, returned handle, stable title cue, and exact customer device ID.
+3. Capture one complete initial view. Record client state, device identity cue, geometry, visible modal, remote OS, and first useful symptom.
+4. Activate one connected-session authorization lease only after connected state and exact-device evidence pass.
+5. Afterwards prefer compact accessibility state, a relevant subtree, delta, crop, or cheap window enumeration. A semantic/layout mismatch promotes one screenshot.
+6. Define one postcondition; execute one reversible action or an eligible verified transaction; refresh and assert locally.
+7. Return to the model only for a new decision, mismatch, confirmation boundary, recovery choice, or final verification.
 
-Read [rapid-playbook.md](../remote/rapid-playbook.md) only for the active fault branch.
+For Codex, use `createRemoteClientSignalAdapter` and `createPersistentWindowSession` from `sky_fast_path.mjs`. Feed the signal adapter's synchronous connection/device/stop verifiers to the session. This classifies stable ToDesk/向日葵 state inside JavaScript instead of spending a model turn on unchanged text.
 
-## Remote window and nested-input discipline
+## Token-efficient state
 
-- Treat local and remote apps, filesystems, accounts, proxies, processes, clipboard state, and logs as separate systems.
-- Prefer accessibility elements and direct value setting. For visual targets, use coordinates relative to the current screenshot and current window lease.
-- Before typing, activate the remote client, focus the nested remote field, and verify the focus cue. After typing, verify that the intended remote field visibly contains the value.
-- Keep separate bindings for the remote client, its toolbar or dialogs, and local overlays. Rebind after display, DPI, zoom, window, monitor, or remote-resolution changes.
-- If the user moves the mouse or types, refresh the current view and incorporate the changed state before continuing.
-- For deliberate password/OTP/UAC entry, call `pauseForUserInput`, let the customer finish, then call `resumeAgentControl`; this handoff keeps the connected authorization lease and performs one focus remap on return.
-- Shared clipboard is suitable for short ordinary diagnostic text when already enabled. Keep credentials, OTPs, API keys, tokens, and private files out of shared clipboard and logs.
+Keep raw observations and verbose history inside the runtime. End each execution cell with `tokenView(result, { maxChars })`:
 
-## Risk and recovery
+- `400`: stable polling, window lifecycle, or unchanged state;
+- `900`: normal diagnosis and verification;
+- `1800`: new branch, ambiguity, or recovery.
 
-| Tier | Examples | Mode behavior |
+Keep only this rolling ledger in model context:
+
+```text
+symptom | current hypothesis | last verified action/result | rollback head | next postcondition | takeover boundary
+```
+
+Retain at most four unresolved/recent events. Use `needles` to select relevant tree lines. Request text or pixels only as needed; take a complete screenshot again for layout/resolution change, failed assertion, coordinate remap, reconnect, or terminal visual proof.
+
+## Authorization, target lock, and handoff
+
+- Each input reads only cached state: `connected`, authorization active, `control_owner=agent`, and no latched stop. Remote verifiers run at initial mapping, accepted observations, explicit client events, and reconnect rather than before every input.
+- After initial binding, a temporarily hidden device ID retains the established baseline. A newly visible conflicting labeled device ID, wrong window/app/title, emergency stop, or target-lock mismatch latches `stopped` and revokes input.
+- A disconnect revokes the lease and freezes mutations. Reconnect only to the same device, obtain fresh authorization, capture a complete view, reconcile committed effects, and continue from the first unmet postcondition.
+- For password, OTP, payment approval, UAC credential, or private value, call `pauseForUserInput`; the customer types while Agent input is paused. Call `resumeAgentControl` after handback. It takes one fresh view and remaps focus while retaining the lease when connection and target are unchanged.
+
+### API acquisition after customer handoff
+
+Use this fixed sequence to avoid extra planning turns:
+
+```text
+open provider console -> pause for password/OTP/payment -> customer handback
+-> refresh once -> create named API key -> configure target app -> minimal connectivity test
+-> report masked key fingerprint/status -> clear task clipboard and temporary traces
+```
+
+If the provider displays a secret once, keep the full value inside the approved private input/runtime path. The customer may perform the secret copy/paste during takeover when that is the available private path. The Agent handles navigation, key creation, configuration, testing, and cleanup after handback. Never emit the full secret into model text, logs, screenshots retained as artifacts, or persistent task state.
+
+## Operating loop
+
+1. Confirm remote input forwarding and target binding.
+2. Classify the fault: `remote-input`, `network`, `account/auth`, `permissions`, `app/version`, `configuration`, or `resource/storage`.
+3. Rank at most three supported hypotheses and choose the cheapest separating check.
+4. Perform one low-risk repair or verified stable transaction against an explicit postcondition.
+5. Verify from a fresh observation/log/minimal functional test. On the second unchanged attempt, pivot.
+6. Require `session.verifySuccess()` and `success_verified=true` before cleanup.
+
+Read [rapid-playbook.md](../remote/rapid-playbook.md) only for the active diagnostic branch.
+
+## Input and recovery discipline
+
+- Keep local and remote apps, filesystems, accounts, clipboard state, and logs distinct.
+- Prefer accessibility/direct value setting. Pointer actions use coordinates from the current window/observation lease.
+- Before typing, activate the remote client, focus the nested field, and verify focus. After typing, verify the intended remote field.
+- Rebind after window/display/DPI/zoom/remote-resolution changes. On `STALE_OBSERVATION_LEASE`, refresh and remap; do not replay the expired action object.
+- Use `waitUntil` for bounded adaptive polling. Mark an opaque video canvas changed after a known transition.
+- If the customer moves the mouse or types outside a deliberate handoff, refresh and incorporate the new state.
+
+## Risk checkpoints
+
+| Tier | Examples | Handling |
 | --- | --- | --- |
-| `L0` | Read system/app state, logs, network/process/port status | Execute within task scope and budget. |
-| `L1` | Restart an app, rebuild a task cache, change an ordinary reversible app setting | Capture original state, execute, verify, restore after a failed hypothesis. |
-| `L2` | Install/update software, proxy/VPN/service/registry/system changes | Apply the host confirmation boundary immediately before mutation. |
-| `L3` | Credentials, OTP/API keys, account permissions, firewall/security tools, UAC/admin authentication | Hold the current decision screen for user takeover, then remap. |
-| `L4` | Broad deletion, reset, reimage, disk formatting | Keep outside the autonomous mutation set and report the exact proposed step. |
+| `L0` | State, logs, network/process/port checks | Execute within scope. |
+| `L1` | Restart app, clear task cache, reversible app setting | Save original state, execute, verify, roll back failed hypothesis. |
+| `L2` | Install/update, proxy/VPN/service/registry/system change | Apply host confirmation immediately before mutation. |
+| `L3` | Password, OTP/API key, account/security permission, UAC | Pause for customer/private-input path, then remap and continue. |
+| `L4` | Broad deletion, reset, reimage, disk formatting | Keep outside the autonomous mutation budget and present the exact pending step. |
 
-Push a restore action onto the rollback stack before each reversible mutation. Freeze mutations on connection loss, target/window switch, device-ID mismatch, abnormal screen state, exhausted budget, or a stop signal. A disconnect revokes authorization. Resume only through same-device reconnection, fresh authorization, a complete observation, and reconciliation with the last verified checkpoint.
+Push a restore action before each reversible mutation. Freeze on connection loss, target mismatch, abnormal screen state, exhausted budget, or stop signal.
 
-## Local and remote task-artifact lifecycle (default)
+## Artifact cleanup and close
 
-Use these defaults:
+Track only files created by this task, separately for local controller and remote device. Create a task-owned temporary root only when needed. Classify each created path as `temporary`, `abandoned/duplicate`, `rollback`, or `deliverable`; record whether it existed before the task.
 
-```text
-cleanup_mode=task-generated-nonessential
-local_cleanup=true
-remote_cleanup=true
-disconnect_after_remote_cleanup=true
-finalize_after_local_cleanup=true
-```
+Close in this order:
 
-“Task-unrelated” means an artifact created during this task that is absent from the requested result and no longer supports verification or rollback. Pre-existing files remain outside this classification even when unrelated to the current task.
+1. Verify functional success and freeze new mutations.
+2. Preserve deliverables, installed/configured results, pre-existing files, committed source changes, and rollback material still needed.
+3. While connected, remove exact remote task-owned temporary, abandoned, duplicate, and expired rollback artifacts; verify absence.
+4. Disconnect the remote client.
+5. Remove and verify the same classes under the local task root. Use `scripts/task_artifacts.py` when local working files exist; any untracked remainder is `cleanup_pending`.
+6. Report visible outcome, root cause, 1-3 changes, fresh verification, masked API status when applicable, and both cleanup states.
 
-### Create and classify
-
-- Read-only tasks create no working directory.
-- Immediately before the first generated artifact, create task-scoped roots:
-  - local controller: `%TEMP%\\computer-use-studio-pro\\<TASK_ID>\\`;
-  - remote computer, when needed: `%TEMP%\\computer-use-studio-pro\\<TASK_ID>\\`.
-- Place local screenshots, downloaded bundles, extracted copies, diagnostic exports, scratch logs, patch drafts, duplicate outputs, and failed-attempt files under the local task root. Put the requested final output directly in its user-selected destination.
-- Keep one compact two-sided ledger: `side | path | existed_before | created_by_task | class | purpose | cleanup_state`.
-- Classify every task-created artifact as:
-  - `temporary` — required only while the task is running;
-  - `unrelated` — abandoned, duplicate, failed-attempt, superseded, or irrelevant to the final result;
-  - `rollback` — retained until functional verification succeeds;
-  - `deliverable` — requested output or a file required for the final result.
-- Record ownership before creating or overwriting a path. A path with `existed_before=true` stays outside automatic cleanup.
-- When local working files exist, use `scripts/task_artifacts.py`. Temporary, unrelated, and rollback cleanup candidates must stay under the task-owned root; a requested deliverable may be tracked at its final destination and is always preserved. Keep the state file outside the artifact root. During `cleanup-local`, pass the original `--local-root`; any untracked remainder produces `cleanup_pending`, and the state is removed only after verified cleanup.
-
-```powershell
-python scripts/task_artifacts.py init --state <ledger.json> --task-id <TASK_ID> --local-root <TASK_ROOT>
-python scripts/task_artifacts.py cleanup-local --state <ledger.json> --task-id <TASK_ID> --local-root <TASK_ROOT> --task-verified --remove-state
-```
-
-### Close sequence
-
-1. Verify the requested functional result and freeze new mutations.
-2. Review the ledger. Preserve `deliverable`, pre-existing paths, installed applications/plugins, committed source changes, required configuration, and rollback copies still needed for an unresolved result.
-3. While the remote connection is active, close session-opened handles, remove exact remote `temporary` and `unrelated` paths, remove expired task-owned rollback files, then remove the remote task root.
-4. Refresh the remote view and record `remote_cleanup=verified`; then disconnect ToDesk/Sunlogin.
-5. On the local controller, close session-opened handles and run the local cleanup plan. Remove exact local `temporary` and `unrelated` paths plus expired rollback files, then remove the local task root and ledger state.
-6. Verify that all tracked deletion targets are absent. Record `local_cleanup=verified` and only then issue the final completion report.
-
-The cleanup set is limited to positive task ownership. Preserve user files, files existing before the task, requested outputs, source edits that implement the task, installed results, broad Desktop/Documents/Downloads contents, application data, host-managed runtime caches, system caches, historical logs, recycle-bin contents, and every path whose ownership is ambiguous.
-
-For a tracked file held open by a session-started process, close that handle and retry the exact path once. Report any remainder as an exact `local_cleanup_pending` or `remote_cleanup_pending` path list.
-
-## Completion evidence
-
-Accept success only from a fresh remote observation, relevant remote log/tool result, or minimal remote functional test. A clicked button or transport-level success is only an attempt. Completion also requires verified cleanup on both sides or exact pending-path lists.
-
-```text
-已处理：<visible outcome>
-原因：<root cause or strongest supported cause>
-改动：<1-3 concrete changes>
-验证：<fresh remote evidence>
-清理：remote=verified; local=verified
-待清理：remote_cleanup_pending=<exact paths>; local_cleanup_pending=<exact paths>
-远程：disconnected after remote cleanup
-注意：<only when a retained setting or takeover point matters>
-```
+Never clean broad user folders, application/system caches, historical logs, ambiguous paths, or pre-existing content as part of task cleanup.
