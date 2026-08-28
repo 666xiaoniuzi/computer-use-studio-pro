@@ -20,7 +20,7 @@ Estimate the route before adding machinery. For one or two ordinary actions with
 
 1. Define one postcondition.
 2. Choose the route that reaches it with the fewest model roundtrips and state changes. Prefer a semantic file/API operation or direct value setting over GUI text replacement and click-select-delete-type sequences.
-3. For one action, combine the action and immediate refresh in the same execution call. For two or more deterministic reversible steps, use a locally verified transaction that refreshes and asserts after every action, then returns only the compact final state.
+3. For one action, combine the action and immediate refresh in the same execution call. For two or more deterministic reversible steps, normally use a locally verified transaction that refreshes and asserts after every action. The only single-terminal-refresh exception is an already-focused, stable, keyboard-only sequence accepted by `runKeyboardBurst`; it requires an explicit no-confirmation-boundary declaration plus final semantic verification or a terminal screenshot for model review.
 4. Use bounded local polling for loading or window launch so the model is not called between identical checks. Poll a state condition, not a blind long sleep.
 5. Verify with the cheapest reliable evidence and keep only the smallest useful output.
 6. Continue on a match; otherwise enter G3.
@@ -54,11 +54,12 @@ Confirm terminal evidence. For remote mode, clean and verify exact task-created 
 
 1. Reuse the persistent runtime and verified target window; do not enumerate applications again while the binding is valid.
 2. Query one property or compact accessibility subtree without a screenshot.
-3. Keep successful straight-line work inside `runVerifiedTransaction`; emit only `summary` and `metrics`.
-4. Compare trees with `ui_delta.py`.
-5. Capture the target crop only when semantics are insufficient.
-6. Capture the full window only for initial visual mapping, layout change, or recovery.
-7. Capture all displays only to discover an unknown window or resolve geometry/focus.
+3. For pure window appearance/closure checks, use `waitForWindowListState` instead of paying for screen/accessibility capture.
+4. Keep successful straight-line work inside `runVerifiedTransaction`; for an already-focused stable keyboard field, use `runKeyboardBurst` to replace two or three captures with one terminal capture.
+5. Compare trees with `ui_delta.py`.
+6. Capture the target crop only when semantics are insufficient.
+7. Capture the full window only for initial visual mapping, layout change, recovery, terminal visual review, or final verification.
+8. Capture all displays only to discover an unknown window or resolve geometry/focus.
 
 Request text and screenshot together only when the next decision needs both. Do not re-emit or reprocess an already displayed screenshot.
 

@@ -1,10 +1,10 @@
 name: computer-use-studio-pro
-version: 0.5.9
+version: 0.6.0
 description: >
   Automatically invoked Single-Skill router for natural-language local or
-  remote computer-control requests and every Computer Use or @oai/sky task:
-  low-latency verified local control plus an on-demand ToDesk/Sunlogin remote
-  mode with device locking, cached authorization, and reconnect recovery.
+  remote computer-control requests and every Computer Use or @oai/sky task,
+  with single-refresh focused keyboard bursts, lightweight window lifecycle
+  checks, verified local control, and ToDesk/Sunlogin reconnect recovery.
 always_load:
   - static/core/contract.md
   - static/core/workflow.md

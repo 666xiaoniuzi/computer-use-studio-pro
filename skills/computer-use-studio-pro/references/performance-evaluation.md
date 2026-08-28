@@ -17,8 +17,10 @@ Use these levers:
 9. run deterministic reversible sequences as locally verified transactions that refresh and assert after every action;
 10. use semantic OOXML operations for bulk WPS/Office text work, then visually inspect the output only when needed;
 11. call the model again only for a new decision, unexpected branch, risk boundary, or failed postcondition.
+12. verify app/window appearance or closure with `waitForWindowListState`, avoiding a full state capture when window lifecycle is the complete postcondition;
+13. use `runKeyboardBurst` for two or three inputs in one already-focused stable field, paying for one terminal observation instead of one observation per input.
 
-Do not reduce latency by reusing stale indexes/coordinates, skipping verification, hiding confirmations, or queueing unverified GUI inputs. A transaction earns its speed by moving repeated refresh-and-check work into the tool runtime, not by omitting it.
+Do not reduce latency by reusing stale indexes/coordinates, hiding confirmations, or queueing general unverified GUI macros. `runKeyboardBurst` is the only terminal-only input burst: it requires current focus proof, stable single-field scope, a narrow keyboard vocabulary, an explicit confirmation-boundary declaration, and terminal semantic or visual verification.
 
 ## Measure before claiming improvement
 
@@ -43,6 +45,8 @@ Track:
 - Full-window captures occur only for visual mapping, layout changes, or recovery.
 - Stable accessibility tasks avoid screenshot capture.
 - A successful straight-line reversible sequence returns to the model once, not once per action.
+- An eligible two- or three-input keyboard burst performs exactly one terminal state capture and reports `saved_observations`.
+- Window lifecycle verification uses lightweight enumeration and does not capture the screen.
 - A failed transaction stops at its first mismatched assertion and reports the completed step count.
 - Duplicate-prone actions never retry without durable status/history checks.
 - Compact resume output contains no more than four events and eight active retry entries per category.
@@ -64,3 +68,15 @@ python scripts/operator_state.py metrics --state <run>/state.json
 ```
 
 Compare the median task time, roundtrips, capture mix, and observation characters. Report uncertainty and failures, not only the improvement percentage.
+
+## 0.6.0 Windows reference measurement
+
+On 2026-08-27, one local Windows runtime produced these three-run medians:
+
+- text-only `get_window_state`: 3.056 seconds;
+- screenshot-only `get_window_state`: 3.153 seconds;
+- `list_windows`: 0.018 seconds;
+- two literal inputs with a screenshot after each input: 6.305 seconds;
+- the same two literal inputs through `runKeyboardBurst` with one terminal screenshot: 3.220 seconds.
+
+The eligible keyboard pattern reduced median wall-clock time by 48.9% while retaining one visible terminal review image. Treat these as a machine/runtime reference rather than a universal service guarantee; repeat the benchmark after runtime, network, display, or remote-client changes.

@@ -27,7 +27,11 @@ if (!globalThis.cusproFastPath) {
 }
 ```
 
-Use the actual loaded Skill directory instead when Codex is configured with a non-default Skill root. Prefer `launchAndAwaitReady`, `observeCompact`, `actAndRefresh`, `runVerifiedTransaction`, `fillEditable`, and `createPersistentWindowSession` over repeated raw action/observation cells. Use raw `sky` calls only for a capability the helper does not wrap or for bounded recovery, and still preserve the same persistent runtime, target lease, compact observation, explicit postcondition, and immediate refresh rules.
+Use the actual loaded Skill directory instead when Codex is configured with a non-default Skill root. Prefer `launchAndAwaitReady`, `observeCompact`, `actAndRefresh`, `runVerifiedTransaction`, `runKeyboardBurst`, `waitForWindowListState`, `fillEditable`, and `createPersistentWindowSession` over repeated raw action/observation cells. Use raw `sky` calls only for a capability the helper does not wrap or for bounded recovery, and still preserve the same persistent runtime, target lease, compact observation, explicit postcondition, and immediate refresh rules.
+
+Use `runKeyboardBurst` only after a current observation proves that one text field already owns focus and remains stable. It accepts two or three `press_key`/`type_text` actions, excludes navigation and pointer actions, and performs one terminal observation. Set `stabilityConfirmed: true` and `confirmationBoundary: false`; set `mutationAuthorized: true` after the applicable confirmation when Select All is followed by replacement or when Backspace/Delete removes content. Supply `finalExpect` for semantic verification, or `visualVerificationRequired: true` to return one terminal screenshot with outcome `visual-review-required`. Persistent sessions expose the same path as `session.keyboardBurst(...)` and still read the cached remote lease gate before every input.
+
+Use `waitForWindowListState` when the entire postcondition is that one returned window appeared or disappeared. Do not request a screenshot merely to prove window lifecycle state.
 
 For an explicit user task, treat ordinary low-risk reversible inputs across the selected local computer as one continuous task authorization. Do not request approval again for each click, keystroke, window change, or routine verification. Keep consequential actions outside fast transactions and apply the host's action-time confirmation rules.
 

@@ -86,6 +86,8 @@ Apply `G0-CONTRACT -> G1-MAP -> G2-EXECUTE-VERIFY <-> G3-RECOVER -> G4-CLOSE` fr
 
 For two or three deterministic, low-risk, reversible actions on one stable page, a host may run one locally verified transaction only when it refreshes after every action, checks an explicit postcondition, and stops at the first mismatch. Keep consequential actions outside a transaction.
 
+For an already-focused text field, `runKeyboardBurst` may execute two or three keyboard-only inputs with one terminal refresh when all of these hold: the current observation proves focus semantically or visually; the field and window are stable; the sequence contains only literal typing, Select All, Backspace, or Delete; the caller declares `confirmationBoundary: false`; replacement/removal has already satisfied the applicable confirmation and sets `mutationAuthorized: true`; and a semantic `finalExpect` or a terminal screenshot for visual review is required. It is a narrow single-field optimization, not a general macro. Use the ordinary per-action transaction for navigation, pointer movement, window shortcuts, uncertain focus, dynamic pages, or consequential work.
+
 Use a direct native route for short tasks with no semantic or transaction advantage. Create state, measurement, or screenshot helpers only when they remove a model roundtrip or improve recovery.
 
 ## 5. Keep the fast path warm
@@ -98,6 +100,7 @@ Use a direct native route for short tasks with no semantic or transaction advant
 - A disconnect revokes the current authorization. Reconnect only to the same device, obtain a fresh authorization signal, capture a complete view, and resume from the last verified checkpoint rather than replaying completed actions.
 - Capture one complete initial view. Afterwards prefer a compact accessibility query or a current crop. Promote a detected semantic change to one screenshot; for opaque remote video canvases, mark the known content change before the next observation.
 - Request a new full screenshot at layout changes, failures, coordinate remapping, and terminal verification.
+- Use `waitForWindowListState` for app/window appearance and closure checks. On this Windows runtime, window enumeration is far cheaper than a screenshot or accessibility capture and is sufficient when the postcondition is strictly window lifecycle state.
 - Use adaptive condition polling for loading instead of unconditional long sleeps.
 - Call the model again for a new decision, unexpected branch, failed assertion, confirmation boundary, or final report—not between unchanged polling states.
 - Track retry attempts by `failure signature + strategy`; after two unchanged attempts, pivot to another supported diagnosis.

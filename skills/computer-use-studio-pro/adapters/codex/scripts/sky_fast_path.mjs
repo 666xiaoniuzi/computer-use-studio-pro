@@ -15,6 +15,12 @@ const ACTIONS = new Set([
 ]);
 
 const TRANSACTION_RISKS = new Set(["low", "reversible"]);
+const KEYBOARD_BURST_METHODS = new Set(["press_key", "type_text"]);
+const KEYBOARD_BURST_KEYS = new Set([
+  "control_l+a", "control+a", "ctrl+a",
+  "backspace", "delete",
+]);
+const EDITABLE_FOCUS = /(?:\b(?:edit|textbox|text[ -]?field|textarea|text[ -]?area|search(?:box|[ -]?field)?|input|combo[ -]?box|axtextfield|axtextarea|axsearchfield)\b|编辑|文本框|文本区域|搜索框|输入框|组合框)/iu;
 
 const ASSIGNMENT_SECRET = /(?:\b(password|passwd|secret|token|cookie|authorization|api[_-]?key|otp|one[- ]?time code)\b|(密码|口令|令牌|密钥|验证码))\s*[:=：]\s*(?:"[^"]*"|'[^']*'|[^\s,;，；]+)/gi;
 const BEARER_SECRET = /\bbearer\s+[A-Za-z0-9._~+/=-]{8,}\b/gi;
@@ -212,6 +218,56 @@ function actionArgs(observation, action) {
 
 function nextNeedsScreenshot(step) {
   return usesCoordinates(step ?? {});
+}
+
+function normalizedKey(value) {
+  return String(value ?? "").replace(/\s+/g, "").toLowerCase();
+}
+
+function validateKeyboardBurst(observation, steps, options) {
+  validateObservation(observation);
+  if (options.transactionClass !== "local-reversible") {
+    throw new Error("Keyboard bursts require transactionClass: 'local-reversible'");
+  }
+  if (!TRANSACTION_RISKS.has(options.risk ?? "reversible")) {
+    throw new Error("Keyboard bursts are limited to low-risk or reversible work");
+  }
+  if (options.stabilityConfirmed !== true) {
+    throw new Error("Keyboard bursts require stabilityConfirmed: true for the current focused field");
+  }
+  if (options.confirmationBoundary !== false) {
+    throw new Error("Keyboard bursts require confirmationBoundary: false after scope review");
+  }
+  if (!Array.isArray(steps) || steps.length < 2 || steps.length > 3) {
+    throw new Error("Keyboard bursts require 2-3 actions");
+  }
+  const focusedElement = String(observation.accessibility?.focused_element ?? "").trim();
+  const hasSemanticFocus = EDITABLE_FOCUS.test(focusedElement);
+  const hasVisualFocusProof = options.focusVerified === true && Boolean(topScreenshot(observation)?.id);
+  if (!hasSemanticFocus && !hasVisualFocusProof) {
+    throw new Error("Keyboard bursts require a current semantic focus or focusVerified: true with a current screenshot");
+  }
+  for (let index = 0; index < steps.length; index += 1) {
+    const step = steps[index];
+    if (!KEYBOARD_BURST_METHODS.has(step?.method)) {
+      throw new Error(`Keyboard burst step ${index} must use press_key or type_text`);
+    }
+    if (step.method === "press_key" && !KEYBOARD_BURST_KEYS.has(normalizedKey(step.args?.key))) {
+      throw new Error(`Keyboard burst step ${index} uses an unsupported key sequence`);
+    }
+    if (step.method === "type_text" && !hasSemanticFocus && !hasVisualFocusProof) {
+      throw new Error(`Keyboard burst step ${index} lacks verified focus`);
+    }
+  }
+  const selectsAll = steps.some((step) => step.method === "press_key" && ["control_l+a", "control+a", "ctrl+a"].includes(normalizedKey(step.args?.key)));
+  const removesOrReplaces = steps.some((step) => step.method === "press_key" && ["backspace", "delete"].includes(normalizedKey(step.args?.key)))
+    || (selectsAll && steps.some((step) => step.method === "type_text"));
+  if (removesOrReplaces && options.mutationAuthorized !== true) {
+    throw new Error("A destructive or replacing keyboard burst requires mutationAuthorized: true after the applicable confirmation");
+  }
+  if (options.finalExpect == null && options.visualVerificationRequired !== true) {
+    throw new Error("Keyboard bursts require finalExpect or visualVerificationRequired: true");
+  }
 }
 
 export function screenshotPoint(observation, x, y, screenshotId) {
@@ -640,6 +696,34 @@ export function createPersistentWindowSession(sky, options = {}) {
     return withSessionMeta(result, changes, { promoted_screenshot: Boolean(visual) });
   }
 
+  async function keyboardBurst(steps, burstOptions = {}) {
+    if (!initialized) await initialObserve();
+    if (!Array.isArray(steps) || steps.length > maxBurstActions) {
+      throw new Error(`Keyboard burst exceeds the ${maxBurstActions}-action session limit`);
+    }
+    assertInputAllowed(state);
+    successVerified = false;
+    successEpoch = null;
+    const result = await runKeyboardBurst(sky, state, steps, {
+      ...burstOptions,
+      transactionClass: burstOptions.transactionClass ?? "local-reversible",
+      beforeAction: async (currentState, index, step) => {
+        assertInputAllowed(currentState);
+        if (burstOptions.beforeAction) await burstOptions.beforeAction(currentState, index, step);
+      },
+      observationGuard: async (currentState, index, step) => {
+        validateRemoteState(currentState);
+        if (burstOptions.observationGuard) await burstOptions.observationGuard(currentState, index, step);
+      },
+    });
+    const changes = result.state?.window ? acceptState(result.state) : {};
+    if (!result.ok && result.outcome === "unknown" && mode === "remote-fast-fix" && !stopLatched && authorizationStatus === "active") {
+      transition("stalled", "keyboard-burst-outcome-unknown");
+    }
+    if (result.verified) rememberVerifiedCheckpoint("keyboard-burst", state);
+    return withSessionMeta(result, changes, { promoted_screenshot: false });
+  }
+
   function noteAttempt(signature, strategy) {
     const key = `${String(signature)}\u0000${String(strategy)}`;
     const count = (attempts.get(key) ?? 0) + 1;
@@ -852,6 +936,7 @@ export function createPersistentWindowSession(sky, options = {}) {
     observe,
     act,
     transaction,
+    keyboardBurst,
     noteAttempt,
     clearAttempts,
     markLayoutChanged,
@@ -991,6 +1076,181 @@ export async function runVerifiedTransaction(sky, observation, steps, options = 
   metrics.compact_chars = JSON.stringify(summary).length;
   metrics.duration_ms = Date.now() - started;
   return { ok: true, outcome: "verified", completed: steps.length, state, summary, metrics };
+}
+
+/**
+ * Execute 2-3 already-focused, low-risk keyboard inputs and pay the expensive
+ * Windows state-capture cost once at the terminal postcondition. This is not a
+ * general macro: it excludes pointer movement, navigation, window shortcuts,
+ * and any sequence that crosses a confirmation boundary.
+ */
+export async function runKeyboardBurst(sky, observation, steps, options = {}) {
+  validateKeyboardBurst(observation, steps, options);
+  const started = Date.now();
+  let state = observation;
+  const metrics = {
+    actions: 0,
+    observations: 0,
+    sky_calls: 0,
+    duration_ms: 0,
+    observation_chars: 0,
+    compact_chars: 0,
+    screenshot_regions: 0,
+    baseline_observations: steps.length,
+    saved_observations: steps.length - 1,
+  };
+
+  for (let index = 0; index < steps.length; index += 1) {
+    const step = steps[index];
+    try {
+      if (options.beforeAction) await options.beforeAction(state, index, step);
+      await sky[step.method]({ ...(step.args ?? {}), window: state.window });
+      metrics.actions += 1;
+      metrics.sky_calls += 1;
+    } catch (error) {
+      metrics.duration_ms = Date.now() - started;
+      return {
+        ok: false,
+        verified: false,
+        outcome: "unknown",
+        completed: index,
+        failed_step: index,
+        reason: String(error),
+        state,
+        summary: compactState(state, options),
+        metrics,
+      };
+    }
+  }
+
+  try {
+    const includeScreenshot = options.include_screenshot ?? options.visualVerificationRequired === true;
+    const includeText = options.include_text ?? (options.finalExpect != null || !includeScreenshot);
+    state = await sky.get_window_state({
+      window: state.window,
+      include_screenshot: includeScreenshot,
+      include_text: includeText,
+    });
+    metrics.observations += 1;
+    metrics.sky_calls += 1;
+    metrics.observation_chars += observationChars(state);
+    metrics.screenshot_regions += state?.screenshots?.length ?? 0;
+  } catch (error) {
+    metrics.duration_ms = Date.now() - started;
+    return {
+      ok: false,
+      verified: false,
+      outcome: "unknown",
+      completed: steps.length,
+      failed_step: steps.length - 1,
+      reason: `terminal refresh failed: ${error}`,
+      state,
+      summary: compactState(state, options),
+      metrics,
+    };
+  }
+
+  if (options.observationGuard) {
+    try {
+      await options.observationGuard(state, steps.length - 1, steps.at(-1));
+    } catch (error) {
+      metrics.duration_ms = Date.now() - started;
+      return {
+        ok: false,
+        verified: false,
+        outcome: "failed",
+        completed: steps.length,
+        failed_step: steps.length - 1,
+        reason: `observation guard failed: ${error}`,
+        state,
+        summary: compactState(state, options),
+        metrics,
+      };
+    }
+  }
+
+  let verified = false;
+  if (options.finalExpect != null) {
+    const check = expectationResult(state, options.finalExpect);
+    if (!check.ok) {
+      const summary = compactState(state, options);
+      metrics.compact_chars = JSON.stringify(summary).length;
+      metrics.duration_ms = Date.now() - started;
+      return {
+        ok: false,
+        verified: false,
+        outcome: "failed",
+        completed: steps.length,
+        failed_step: steps.length - 1,
+        reason: check.reason,
+        state,
+        summary,
+        metrics,
+      };
+    }
+    verified = true;
+  }
+  if (options.visualVerificationRequired === true && (state.screenshots?.length ?? 0) === 0) {
+    const summary = compactState(state, options);
+    metrics.compact_chars = JSON.stringify(summary).length;
+    metrics.duration_ms = Date.now() - started;
+    return {
+      ok: false,
+      verified: false,
+      outcome: "failed",
+      completed: steps.length,
+      failed_step: steps.length - 1,
+      reason: "visual verification requested but no terminal screenshot was returned",
+      state,
+      summary,
+      metrics,
+    };
+  }
+
+  const summary = compactState(state, options);
+  metrics.compact_chars = JSON.stringify(summary).length;
+  metrics.duration_ms = Date.now() - started;
+  return {
+    ok: true,
+    verified,
+    outcome: verified ? "verified" : "visual-review-required",
+    completed: steps.length,
+    state,
+    summary,
+    metrics,
+  };
+}
+
+/** Poll the cheap window list for a unique appearance or complete closure. */
+export async function waitForWindowListState(sky, predicate, options = {}) {
+  if (typeof predicate !== "function") throw new Error("waitForWindowListState requires a predicate");
+  const attempts = options.attempts ?? 20;
+  const intervalMs = options.intervalMs ?? 75;
+  const expectedCount = options.expectedCount ?? 1;
+  if (!Number.isInteger(attempts) || attempts < 1) throw new Error("attempts must be positive");
+  if (!Number.isInteger(expectedCount) || expectedCount < 0) throw new Error("expectedCount must be zero or greater");
+  const started = Date.now();
+  let windows = [];
+  let matches = [];
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    windows = await sky.list_windows();
+    matches = windows.filter(predicate);
+    if (matches.length === expectedCount) {
+      return {
+        ok: true,
+        attempts: attempt + 1,
+        matches,
+        metrics: { list_calls: attempt + 1, duration_ms: Date.now() - started },
+      };
+    }
+    if (attempt + 1 < attempts) await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  return {
+    ok: false,
+    attempts,
+    matches,
+    metrics: { list_calls: attempts, duration_ms: Date.now() - started },
+  };
 }
 
 export async function fillEditable(sky, observation, options) {
@@ -1211,6 +1471,131 @@ export async function selfTest() {
   if (!result.ok || result.completed !== 3 || result.metrics.sky_calls !== 6 || !result.summary.document_text.includes("hello")) {
     throw new Error("verified transaction self-test failed");
   }
+  let burstValue = "";
+  let burstObservations = 0;
+  const burstSky = {
+    ...mockSky,
+    async type_text(input) { burstValue += input.text; calls.push(["burst_type_text", input]); },
+    async get_window_state(input) {
+      burstObservations += 1;
+      return {
+        window,
+        accessibility: input.include_text
+          ? { focused_element: "13 Edit", document_text: burstValue, tree: `13 Edit ${burstValue}` }
+          : null,
+        screenshots: input.include_screenshot ? [{ id: "burst-shot", width: 100, height: 100, zIndex: 1 }] : [],
+      };
+    },
+  };
+  const keyboardBurst = await runKeyboardBurst(
+    burstSky,
+    observation,
+    [
+      { method: "type_text", args: { text: "A" } },
+      { method: "type_text", args: { text: "B" } },
+    ],
+    {
+      transactionClass: "local-reversible",
+      risk: "low",
+      stabilityConfirmed: true,
+      confirmationBoundary: false,
+      finalExpect: { includes: "AB" },
+    },
+  );
+  if (!keyboardBurst.ok || !keyboardBurst.verified || keyboardBurst.metrics.observations !== 1
+      || keyboardBurst.metrics.saved_observations !== 1 || burstObservations !== 1) {
+    throw new Error("single-refresh keyboard burst self-test failed");
+  }
+  let nonEditableFocusRejected = false;
+  try {
+    await runKeyboardBurst(
+      burstSky,
+      { ...observation, accessibility: { focused_element: "21 Button", tree: "21 Button" } },
+      [
+        { method: "type_text", args: { text: "should-not-run" } },
+        { method: "type_text", args: { text: "should-not-run" } },
+      ],
+      {
+        transactionClass: "local-reversible",
+        risk: "low",
+        stabilityConfirmed: true,
+        confirmationBoundary: false,
+        finalExpect: { includes: "should-not-run" },
+      },
+    );
+  } catch { nonEditableFocusRejected = true; }
+  if (!nonEditableFocusRejected) throw new Error("keyboard burst accepted non-editable semantic focus");
+  const semanticVisualBurst = await runKeyboardBurst(
+    burstSky,
+    observation,
+    [
+      { method: "type_text", args: { text: "E" } },
+      { method: "type_text", args: { text: "V" } },
+    ],
+    {
+      transactionClass: "local-reversible",
+      risk: "low",
+      stabilityConfirmed: true,
+      confirmationBoundary: false,
+      finalExpect: { includes: "ABEV" },
+      visualVerificationRequired: true,
+    },
+  );
+  if (!semanticVisualBurst.ok || !semanticVisualBurst.verified
+      || semanticVisualBurst.metrics.observations !== 1
+      || semanticVisualBurst.metrics.screenshot_regions !== 1) {
+    throw new Error("combined semantic-and-visual keyboard burst self-test failed");
+  }
+  let unauthorizedReplacementRejected = false;
+  try {
+    await runKeyboardBurst(
+      burstSky,
+      observation,
+      [
+        { method: "press_key", args: { key: "Control_L+a" } },
+        { method: "type_text", args: { text: "replacement" } },
+      ],
+      {
+        transactionClass: "local-reversible",
+        risk: "low",
+        stabilityConfirmed: true,
+        confirmationBoundary: false,
+        finalExpect: { includes: "replacement" },
+      },
+    );
+  } catch { unauthorizedReplacementRejected = true; }
+  if (!unauthorizedReplacementRejected) throw new Error("keyboard burst bypassed replacement authorization");
+  const visualBurst = await runKeyboardBurst(
+    burstSky,
+    { ...observation, accessibility: null, screenshots: [{ id: "focus-shot", width: 100, height: 100, zIndex: 1 }] },
+    [
+      { method: "type_text", args: { text: "C" } },
+      { method: "type_text", args: { text: "D" } },
+    ],
+    {
+      transactionClass: "local-reversible",
+      risk: "low",
+      stabilityConfirmed: true,
+      confirmationBoundary: false,
+      focusVerified: true,
+      visualVerificationRequired: true,
+    },
+  );
+  if (!visualBurst.ok || visualBurst.verified || visualBurst.outcome !== "visual-review-required"
+      || visualBurst.metrics.screenshot_regions !== 1) {
+    throw new Error("visual-review keyboard burst self-test failed");
+  }
+  let windowListReads = 0;
+  const windowListSky = {
+    async list_windows() {
+      windowListReads += 1;
+      return windowListReads < 2 ? [] : [window];
+    },
+  };
+  const appeared = await waitForWindowListState(windowListSky, (candidate) => candidate.id === window.id, { attempts: 3, intervalMs: 0 });
+  if (!appeared.ok || appeared.attempts !== 2 || appeared.matches.length !== 1) {
+    throw new Error("lightweight window-list wait self-test failed");
+  }
   const refreshed = await actAndRefresh(mockSky, observation, { method: "type_text", args: { text: "checked" } }, { expect: { includes: "checked" } });
   if (!String(refreshed.accessibility?.document_text).includes("checked")) {
     throw new Error("act-and-refresh postcondition self-test failed");
@@ -1235,6 +1620,21 @@ export async function selfTest() {
   );
   if (localUnverified.verified || localUnverified.outcome !== "observed-unverified") {
     throw new Error("allowUnverified action was mislabeled as verified");
+  }
+  const localBurst = await localSession.keyboardBurst(
+    [
+      { method: "type_text", args: { text: "session-A" } },
+      { method: "type_text", args: { text: "session-B" } },
+    ],
+    {
+      risk: "low",
+      stabilityConfirmed: true,
+      confirmationBoundary: false,
+      finalExpect: { includes: "session-B" },
+    },
+  );
+  if (!localBurst.ok || !localBurst.verified || localBurst.metrics.saved_observations !== 1) {
+    throw new Error("persistent session keyboard burst self-test failed");
   }
   value = "";
   const redacted = compactState({ window, accessibility: { focused_element: "Edit", document_text: "token=abc123456789 and Bearer abcdefghijklmnop; user@example.com; +86 138 0013 8000", tree: "Edit token=abc123456789" }, screenshots: [] });
@@ -1301,10 +1701,12 @@ export async function selfTest() {
 
   const leaseChecks = { authorization: 0, connection: 0, device: 0, stop: 0 };
   let leaseChecksAtInput = null;
+  const leaseChecksAtInputs = [];
   const leasedSky = {
     ...mockSky,
     async type_text(input) {
       leaseChecksAtInput = { ...leaseChecks };
+      leaseChecksAtInputs.push({ ...leaseChecks });
       return mockSky.type_text(input);
     },
   };
@@ -1344,6 +1746,26 @@ export async function selfTest() {
   );
   if (JSON.stringify(leaseChecksAtInput) !== JSON.stringify(checksBeforeInput) || leaseChecks.authorization !== 1) {
     throw new Error("remote verifiers ran immediately before a leased input action");
+  }
+  const burstInputStart = leaseChecksAtInputs.length;
+  const checksBeforeBurst = { ...leaseChecks };
+  const leasedBurst = await leased.keyboardBurst(
+    [
+      { method: "type_text", args: { text: "lease-burst-1" } },
+      { method: "type_text", args: { text: "lease-burst-2" } },
+    ],
+    {
+      risk: "low",
+      stabilityConfirmed: true,
+      confirmationBoundary: false,
+      finalExpect: { includes: "lease-burst-2" },
+      screenshotOnSemanticChange: false,
+    },
+  );
+  const burstInputChecks = leaseChecksAtInputs.slice(burstInputStart);
+  if (!leasedBurst.ok || !leasedBurst.verified || burstInputChecks.length !== 2
+      || burstInputChecks.some((entry) => JSON.stringify(entry) !== JSON.stringify(checksBeforeBurst))) {
+    throw new Error("remote keyboard burst re-ran live verifiers between cached-gate inputs");
   }
 
   let observedDeviceId = remoteDeviceId;
