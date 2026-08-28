@@ -20,6 +20,7 @@ const KEYBOARD_BURST_KEYS = new Set([
   "control_l+a", "control+a", "ctrl+a",
   "backspace", "delete",
 ]);
+const MAX_KEYBOARD_BURST_TEXT_CHARS = 4096;
 const EDITABLE_FOCUS = /(?:\b(?:edit|textbox|text[ -]?field|textarea|text[ -]?area|search(?:box|[ -]?field)?|input|combo[ -]?box|axtextfield|axtextarea|axsearchfield)\b|编辑|文本框|文本区域|搜索框|输入框|组合框)/iu;
 
 const ASSIGNMENT_SECRET = /(?:\b(password|passwd|secret|token|cookie|authorization|api[_-]?key|otp|one[- ]?time code)\b|(密码|口令|令牌|密钥|验证码))\s*[:=：]\s*(?:"[^"]*"|'[^']*'|[^\s,;，；]+)/gi;
@@ -117,6 +118,13 @@ function stateContainsDeviceId(state, expectedDeviceId) {
     .map((character) => character.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
     .join("[^A-Za-z0-9]*");
   return new RegExp(`(?:^|[^A-Za-z0-9])${flexible}(?=$|[^A-Za-z0-9])`, "i").test(stateText(state));
+}
+
+function defaultObservedDeviceIds(state) {
+  const pattern = /(?:device(?:\s*id)?|remote\s*id|设备(?:\s*(?:id|编号))?|识别码|伙伴识别码)\s*[:：#]?\s*([0-9](?:[0-9 -]{3,20}[0-9]))/giu;
+  return [...stateText(state).matchAll(pattern)]
+    .map((match) => normalizeDeviceId(match[1]))
+    .filter(Boolean);
 }
 
 function defaultConnectionVerifier(state) {
@@ -255,8 +263,20 @@ function validateKeyboardBurst(observation, steps, options) {
     if (step.method === "press_key" && !KEYBOARD_BURST_KEYS.has(normalizedKey(step.args?.key))) {
       throw new Error(`Keyboard burst step ${index} uses an unsupported key sequence`);
     }
-    if (step.method === "type_text" && !hasSemanticFocus && !hasVisualFocusProof) {
-      throw new Error(`Keyboard burst step ${index} lacks verified focus`);
+    if (step.method === "type_text") {
+      const text = step.args?.text;
+      if (typeof text !== "string" || text.length === 0) {
+        throw new Error(`Keyboard burst step ${index} requires a non-empty literal text payload`);
+      }
+      if (text.length > MAX_KEYBOARD_BURST_TEXT_CHARS) {
+        throw new Error(`Keyboard burst step ${index} exceeds the ${MAX_KEYBOARD_BURST_TEXT_CHARS}-character limit`);
+      }
+      if (/[\u0000-\u001f\u007f]/u.test(text)) {
+        throw new Error(`Keyboard burst step ${index} contains a control character; use the verified per-action path`);
+      }
+      if (!hasSemanticFocus && !hasVisualFocusProof) {
+        throw new Error(`Keyboard burst step ${index} lacks verified focus`);
+      }
     }
   }
   const selectsAll = steps.some((step) => step.method === "press_key" && ["control_l+a", "control+a", "ctrl+a"].includes(normalizedKey(step.args?.key)));
@@ -365,6 +385,7 @@ export function createPersistentWindowSession(sky, options = {}) {
   let successVerified = false;
   let successEpoch = null;
   let lastVerifiedCheckpoint = null;
+  let boundLabeledDeviceIds = null;
   const attempts = new Map();
 
   function targetFingerprint() {
@@ -402,7 +423,7 @@ export function createPersistentWindowSession(sky, options = {}) {
     throw new Error(message);
   }
 
-  function deviceMatches(nextState) {
+  function deviceMatches(nextState, { requireEvidence = false } = {}) {
     if (mode !== "remote-fast-fix") return true;
     if (deviceVerifier) return callbackBoolean("deviceVerifier", deviceVerifier, nextState, remoteDeviceId, targetFingerprint());
     if (deviceIdExtractor) {
@@ -410,7 +431,19 @@ export function createPersistentWindowSession(sky, options = {}) {
       if (observed && typeof observed.then === "function") throw new Error("deviceIdExtractor must return synchronously");
       return normalizeDeviceId(observed) === normalizeDeviceId(remoteDeviceId);
     }
-    return stateContainsDeviceId(nextState, remoteDeviceId);
+    const expected = normalizeDeviceId(remoteDeviceId);
+    const labeledIds = defaultObservedDeviceIds(nextState);
+    if (requireEvidence) {
+      if (!labeledIds.includes(expected) && !stateContainsDeviceId(nextState, remoteDeviceId)) return false;
+      boundLabeledDeviceIds = new Set([...labeledIds, expected]);
+      return true;
+    }
+    if (labeledIds.length > 0 && boundLabeledDeviceIds) {
+      return labeledIds.every((observed) => boundLabeledDeviceIds.has(observed));
+    }
+    if (labeledIds.length > 0) return labeledIds.includes(expected);
+    if (stateContainsDeviceId(nextState, remoteDeviceId)) return true;
+    return !requireEvidence;
   }
 
   function connectionIsActive(nextState) {
@@ -446,7 +479,9 @@ export function createPersistentWindowSession(sky, options = {}) {
       transition("disconnected", "remote-connection-lost", { revoke: true });
       throw new Error("Remote connection is no longer active");
     }
-    if (!deviceMatches(nextState)) failTargetLock("Remote device lock changed", "remote-device-changed");
+    if (!deviceMatches(nextState, { requireEvidence: activateAuthorization })) {
+      failTargetLock("Remote device lock changed", "remote-device-changed");
+    }
     if (identityCue && !stateText(nextState).includes(identityCue)) {
       failTargetLock("Remote session identity cue changed", "remote-identity-changed");
     }
@@ -817,6 +852,7 @@ export function createPersistentWindowSession(sky, options = {}) {
     lastTitle = null;
     lastGeometry = "";
     lastContentSignature = null;
+    boundLabeledDeviceIds = null;
     pendingVisualRefresh = true;
     try {
       const result = await observeCompact(sky, window, {
@@ -1223,17 +1259,20 @@ export async function runKeyboardBurst(sky, observation, steps, options = {}) {
 
 /** Poll the cheap window list for a unique appearance or complete closure. */
 export async function waitForWindowListState(sky, predicate, options = {}) {
+  if (!sky || typeof sky.list_windows !== "function") throw new Error("waitForWindowListState requires sky.list_windows");
   if (typeof predicate !== "function") throw new Error("waitForWindowListState requires a predicate");
   const attempts = options.attempts ?? 20;
   const intervalMs = options.intervalMs ?? 75;
   const expectedCount = options.expectedCount ?? 1;
   if (!Number.isInteger(attempts) || attempts < 1) throw new Error("attempts must be positive");
+  if (!Number.isFinite(intervalMs) || intervalMs < 0) throw new Error("intervalMs must be zero or greater");
   if (!Number.isInteger(expectedCount) || expectedCount < 0) throw new Error("expectedCount must be zero or greater");
   const started = Date.now();
   let windows = [];
   let matches = [];
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     windows = await sky.list_windows();
+    if (!Array.isArray(windows)) throw new Error("sky.list_windows must return an array");
     matches = windows.filter(predicate);
     if (matches.length === expectedCount) {
       return {
@@ -1525,6 +1564,27 @@ export async function selfTest() {
     );
   } catch { nonEditableFocusRejected = true; }
   if (!nonEditableFocusRejected) throw new Error("keyboard burst accepted non-editable semantic focus");
+  for (const invalidText of ["line\nbreak", "", undefined]) {
+    let invalidLiteralRejected = false;
+    try {
+      await runKeyboardBurst(
+        burstSky,
+        observation,
+        [
+          { method: "type_text", args: { text: invalidText } },
+          { method: "type_text", args: { text: "valid" } },
+        ],
+        {
+          transactionClass: "local-reversible",
+          risk: "low",
+          stabilityConfirmed: true,
+          confirmationBoundary: false,
+          finalExpect: { includes: "valid" },
+        },
+      );
+    } catch { invalidLiteralRejected = true; }
+    if (!invalidLiteralRejected) throw new Error("keyboard burst accepted an invalid literal text payload");
+  }
   const semanticVisualBurst = await runKeyboardBurst(
     burstSky,
     observation,
@@ -1596,6 +1656,9 @@ export async function selfTest() {
   if (!appeared.ok || appeared.attempts !== 2 || appeared.matches.length !== 1) {
     throw new Error("lightweight window-list wait self-test failed");
   }
+  let invalidWindowPollRejected = false;
+  try { await waitForWindowListState(windowListSky, () => true, { attempts: 1, intervalMs: -1 }); } catch { invalidWindowPollRejected = true; }
+  if (!invalidWindowPollRejected) throw new Error("window-list wait accepted a negative interval");
   const refreshed = await actAndRefresh(mockSky, observation, { method: "type_text", args: { text: "checked" } }, { expect: { includes: "checked" } });
   if (!String(refreshed.accessibility?.document_text).includes("checked")) {
     throw new Error("act-and-refresh postcondition self-test failed");
@@ -1768,10 +1831,46 @@ export async function selfTest() {
     throw new Error("remote keyboard burst re-ran live verifiers between cached-gate inputs");
   }
 
+  const missingInitialDevice = createPersistentWindowSession({
+    async get_window_state(input) {
+      return { window, accessibility: { focused_element: "13 Edit", document_text: "Remote desktop", tree: "13 Edit Remote desktop" }, screenshots: input.include_screenshot ? [{ id: "missing-device", width: 100, height: 100, zIndex: 1 }] : [] };
+    },
+  }, {
+    mode: "remote-fast-fix", window, targetApp: "demo", targetTitleIncludes: "Demo",
+    remoteDeviceId, authorizationGranted: true, taskScope: "repair", success: "done",
+    screenshotOnSemanticChange: false,
+  });
+  let missingInitialDeviceRejected = false;
+  try { await missingInitialDevice.initialObserve(); } catch { missingInitialDeviceRejected = true; }
+  if (!missingInitialDeviceRejected || missingInitialDevice.snapshot().session_status !== "stopped") {
+    throw new Error("remote session accepted an initial observation without device evidence");
+  }
+
+  let hiddenDeviceObservation = 0;
+  const temporarilyHiddenDeviceSky = {
+    async get_window_state(input) {
+      hiddenDeviceObservation += 1;
+      const text = hiddenDeviceObservation === 1 ? `Device ID: ${remoteDeviceId}` : "Remote desktop settings";
+      return { window, accessibility: { focused_element: "13 Edit", document_text: text, tree: `13 Edit ${text}` }, screenshots: input.include_screenshot ? [{ id: `hidden-device-${hiddenDeviceObservation}`, width: 100, height: 100, zIndex: 1 }] : [] };
+    },
+  };
+  const stableHiddenDevice = createPersistentWindowSession(temporarilyHiddenDeviceSky, {
+    mode: "remote-fast-fix", window, targetApp: "demo", targetTitleIncludes: "Demo",
+    remoteDeviceId, authorizationGranted: true, taskScope: "repair", success: "done",
+    screenshotOnSemanticChange: false,
+  });
+  await stableHiddenDevice.initialObserve();
+  await stableHiddenDevice.observe("routine", { screenshotOnSemanticChange: false });
+  if (stableHiddenDevice.snapshot().session_status !== "connected"
+      || stableHiddenDevice.snapshot().authorization_status !== "active") {
+    throw new Error("remote device binding was lost when the ID temporarily left the accepted observation");
+  }
+
   let observedDeviceId = remoteDeviceId;
   const switchedDeviceSky = {
     async get_window_state(input) {
-      return { window, accessibility: { focused_element: "13 Edit", document_text: `Device ${observedDeviceId}`, tree: `13 Edit Device ${observedDeviceId}` }, screenshots: input.include_screenshot ? [{ id: "device-shot", width: 100, height: 100, zIndex: 1 }] : [] };
+      const deviceText = `Device ${remoteDeviceId}\nRemote ID ${observedDeviceId}`;
+      return { window, accessibility: { focused_element: "13 Edit", document_text: deviceText, tree: `13 Edit ${deviceText}` }, screenshots: input.include_screenshot ? [{ id: "device-shot", width: 100, height: 100, zIndex: 1 }] : [] };
     },
   };
   const deviceLocked = createPersistentWindowSession(switchedDeviceSky, {
