@@ -22,7 +22,7 @@ if (!globalThis.cusproUsage) {
 }
 ```
 
-Use the actual Skill root when installation differs. Reuse both globals for the whole task.
+Use the actual Skill root when installation differs. Reuse both globals for the whole task. When a task is classified as `remote-fast-fix`, call `globalThis.cusproUsage.startTask()` exactly once as soon as its compact task contract is accepted and before the first remote observation or input; this resets prior counters and establishes the wall-clock start.
 
 ## Compact output discipline
 
@@ -69,8 +69,10 @@ Call `session.verifySuccess()` before completion and require `success_verified=t
 
 For Office bulk text, `scripts/ooxml_text.py` writes and verifies a new copy; inspect it visually when the task requires visual fidelity. Before opening Save As, call `deriveArtifactFileName({ title, task }, { extension: ".docx" })` (or the matching extension), use clipboard paste when remote Unicode direct typing is unreliable, then verify the exact desktop filename. A generic application default is a failed filename postcondition, even when document contents are correct.
 
-## Completion handback and usage
+## Remote completion handback, usage, and duration
 
 For remote work, finish cleanup, end Agent input, revoke/close the task lease, then minimize or close the bound remote-client window and reveal the host desktop. Reuse the latest valid window lease and a screenshot-free lifecycle/window check; do not add a visual-model turn merely for handback.
 
-Every completion response includes `cusproUsage.report(hostUsage)` output. Pass host usage when Codex exposes `input_tokens`, `output_tokens`, cached-input Tokens, or a total; the report labels those as `host-exact`. If the host omits usage, call `cusproUsage.report()` and label `estimated_compact_view_tokens`, `compact_chars`, `tool_calls`, and `screenshots` as a compact-view estimate rather than an API billing total.
+After host handback, call `cusproUsage.report(hostUsage)` exactly once and reuse that returned object in the remote completion response. Pass host usage when Codex exposes `input_tokens`, `output_tokens`, cached-input Tokens, or a total; the report labels those as `host-exact`. If the host omits usage, call `cusproUsage.report()` and label `estimated_compact_view_tokens`, `compact_chars`, `tool_calls`, and `screenshots` as a compact-view estimate rather than an API billing total. Always show `started_at`, `finished_at`, `duration_ms`, and `duration_human`; duration is wall-clock time from `startTask()` through verification, cleanup, and visible host handback, including customer takeover and wait/reconnect time.
+
+Show this Token-and-duration block only for `remote-fast-fix` completion. Ordinary conversation and `local` completion reports omit it.

@@ -56,7 +56,7 @@ Treat screenshot IDs, element indexes, coordinates, focus, and crops as expiring
 - Maintain only: capsule, current hypothesis, last verified result, rollback head, and at most four unresolved/recent events. Compact older successful history on disk.
 - Reuse the target handle and session flags. Use `waitForWindowListState` for pure window appearance/closure and adaptive local polling for loading.
 - Prefer direct setting and semantic verification over click-select-delete-type sequences. Keep user-facing progress and the final report concise unless detail is requested.
-- Initialize one in-memory task usage meter and feed each emitted compact view into it. Every completion report includes Token usage: use exact host input/output/cache totals when exposed; otherwise show the meter's clearly labelled compact-view estimate plus compact characters, tool calls, and screenshot count. Reporting reuses existing metrics and adds no observation or model roundtrip.
+- For `remote-fast-fix`, start one in-memory task meter exactly once when the remote task contract is accepted, then feed each emitted compact view into it. The remote completion report includes Token usage plus wall-clock start, finish, and total duration through verification, cleanup, and visible host handback. Prefer exact host input/output/cache totals; otherwise show the clearly labelled compact-view estimate. Ordinary chat and `local` completion reports omit this usage/timing block. Reporting reuses the same clock and metrics, so it adds no observation or model roundtrip.
 
 Never trade away fresh evidence, device lock, connected-session authorization, confirmation boundaries, secret redaction, rollback, or cleanup merely to reduce tokens.
 

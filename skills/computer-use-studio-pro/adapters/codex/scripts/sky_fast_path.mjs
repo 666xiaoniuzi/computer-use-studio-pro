@@ -154,10 +154,52 @@ function normalizedHostUsage(hostUsage) {
 }
 
 /** Aggregate already-emitted compact views without adding a tool/model roundtrip. */
+function formatDurationMs(value) {
+  const durationMs = Math.max(0, Math.round(Number(value) || 0));
+  const hours = Math.floor(durationMs / 3_600_000);
+  const minutes = Math.floor((durationMs % 3_600_000) / 60_000);
+  const seconds = Math.floor((durationMs % 60_000) / 1_000);
+  const milliseconds = durationMs % 1_000;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${String(milliseconds).padStart(3, "0")}`;
+}
+
 export function createTaskUsageMeter(options = {}) {
   const charsPerToken = Math.max(1, Number(options.charsPerToken ?? 3));
+  const clock = typeof options.clock === "function" ? options.clock : Date.now;
   const counters = { views: 0, compact_chars: 0, tool_calls: 0, screenshots: 0, actions: 0 };
+
+  const readClock = () => {
+    const value = Number(clock());
+    if (!Number.isFinite(value)) throw new TypeError("task usage meter clock must return a finite timestamp");
+    return value;
+  };
+  const normalizeStart = (value) => {
+    const timestamp = Number(value);
+    if (!Number.isFinite(timestamp)) throw new TypeError("task start timestamp must be finite");
+    return timestamp;
+  };
+  let startedAtMs = normalizeStart(options.startedAtMs ?? readClock());
+
+  const resetCounters = () => {
+    Object.assign(counters, { views: 0, compact_chars: 0, tool_calls: 0, screenshots: 0, actions: 0 });
+  };
+  const timing = () => {
+    const finishedAtMs = readClock();
+    const durationMs = Math.max(0, Math.round(finishedAtMs - startedAtMs));
+    return {
+      started_at: new Date(startedAtMs).toISOString(),
+      finished_at: new Date(finishedAtMs).toISOString(),
+      duration_ms: durationMs,
+      duration_human: formatDurationMs(durationMs),
+    };
+  };
+
   return {
+    startTask(value = readClock()) {
+      startedAtMs = normalizeStart(value);
+      resetCounters();
+      return { started_at: new Date(startedAtMs).toISOString() };
+    },
     view(result, viewOptions = {}) {
       const view = tokenView(result, viewOptions);
       counters.views += 1;
@@ -169,16 +211,20 @@ export function createTaskUsageMeter(options = {}) {
     },
     report(hostUsage = null) {
       const exact = normalizedHostUsage(hostUsage);
-      if (exact) return { source: "host-exact", ...exact, ...counters };
+      const elapsed = timing();
+      if (exact) return { source: "host-exact", ...exact, ...elapsed, ...counters };
       return {
         source: "estimated-compact-view",
         estimated_compact_view_tokens: Math.ceil(counters.compact_chars / charsPerToken),
         estimate_basis: `${counters.compact_chars} serialized compact characters / ${charsPerToken}`,
+        ...elapsed,
         ...counters,
       };
     },
-    reset() {
-      Object.assign(counters, { views: 0, compact_chars: 0, tool_calls: 0, screenshots: 0, actions: 0 });
+    reset(value = readClock()) {
+      startedAtMs = normalizeStart(value);
+      resetCounters();
+      return { started_at: new Date(startedAtMs).toISOString() };
     },
   };
 }
@@ -2495,13 +2541,23 @@ export async function selfTest() {
   if (semanticName !== "Codex、Claude Code、CC Switch 与 DSH 使用指南.docx" || fallbackName !== "远程模型切换使用指南.docx") {
     throw new Error(`semantic filename self-test failed: ${semanticName}; ${fallbackName}`);
   }
-  const usageMeter = createTaskUsageMeter({ charsPerToken: 3 });
+  let usageNow = Date.UTC(2026, 7, 29, 0, 0, 0, 0);
+  const usageMeter = createTaskUsageMeter({ charsPerToken: 3, clock: () => usageNow });
+  usageMeter.startTask();
   usageMeter.view({ ok: true, state: tokenState, metrics: { actions: 1, sky_calls: 2 } }, { maxChars: 400 });
+  usageNow += 65_432;
   const estimatedUsage = usageMeter.report();
   const exactUsage = usageMeter.report({ input_tokens: 12, output_tokens: 8, cached_input_tokens: 4 });
+  usageNow += 1_000;
+  const restarted = usageMeter.reset();
+  const resetUsage = usageMeter.report();
   if (estimatedUsage.source !== "estimated-compact-view" || estimatedUsage.estimated_compact_view_tokens < 1
-      || exactUsage.source !== "host-exact" || exactUsage.total_tokens !== 20 || exactUsage.cached_input_tokens !== 4) {
-    throw new Error("task usage meter self-test failed");
+      || estimatedUsage.duration_ms !== 65_432 || estimatedUsage.duration_human !== "00:01:05.432"
+      || exactUsage.source !== "host-exact" || exactUsage.total_tokens !== 20 || exactUsage.cached_input_tokens !== 4
+      || exactUsage.started_at !== "2026-08-29T00:00:00.000Z" || exactUsage.finished_at !== "2026-08-29T00:01:05.432Z"
+      || restarted.started_at !== "2026-08-29T00:01:06.432Z" || resetUsage.duration_ms !== 0
+      || resetUsage.views !== 0 || resetUsage.compact_chars !== 0) {
+    throw new Error("task usage and duration meter self-test failed");
   }
   const noScreenshotState = compactState(tokenState, { maxChars: 400, screenshotLimit: 0 });
   const tokenJson = JSON.stringify(compactTokenView);

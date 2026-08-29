@@ -108,6 +108,6 @@ Close in this order:
 4. End Agent input and revoke/close the task lease. Disconnect only when the task contract calls for it; otherwise leave the customer deliverable in a stable state.
 5. Remove and verify the same classes under the local task root. Use `scripts/task_artifacts.py` when local working files exist; any untracked remainder is `cleanup_pending`.
 6. Minimize or close the ToDesk/向日葵 window and reveal the host desktop. Use the latest valid window lease and a screenshot-free window-state/lifecycle check so handback adds no visual-model turn.
-7. Report visible outcome, exact deliverable name/path, root cause, 1-3 changes, fresh verification, masked API status when applicable, both cleanup states, and Token usage. Prefer exact host totals; otherwise label the compact-view estimate and show its basis.
+7. After the host desktop is visible, capture one final meter report and show the visible outcome, exact deliverable name/path, root cause, 1-3 changes, fresh verification, masked API status when applicable, both cleanup states, Token usage, start/finish timestamps, and total wall-clock duration in `HH:MM:SS.mmm`. Prefer exact host totals; otherwise label the compact-view estimate and show its basis. Include customer handoff, reconnect, download, and wait time because the clock spans the whole remote task.
 
 Never clean broad user folders, application/system caches, historical logs, ambiguous paths, or pre-existing content as part of task cleanup.

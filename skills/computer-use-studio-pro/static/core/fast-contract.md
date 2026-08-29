@@ -30,4 +30,4 @@
 - Disconnect revokes remote authorization. Same-device reconnect requires fresh authorization and complete remapping. Device conflict or emergency stop latches stopped.
 - Select a semantic final filename before creating each deliverable; preserve its extension and verify the exact saved name. Generic defaults such as `新建文档`, `Untitled`, and `Document1` do not satisfy completion.
 - Clean only positively owned task artifacts; preserve pre-existing files and deliverables.
-- Every final report includes exact host Token usage when available, otherwise a labelled compact-view estimate from already collected metrics. A remote close also ends Agent input and returns the visible foreground to the host desktop.
+- A remote final report includes exact host Token usage when available, otherwise a labelled compact-view estimate from already collected metrics, plus the task start, finish, and total wall-clock duration. Ordinary chat and local completion omit this block. Remote close ends Agent input and returns the visible foreground to the host desktop before the timer stops.
