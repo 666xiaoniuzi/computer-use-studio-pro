@@ -12,7 +12,7 @@ Establish the goal, terminal evidence, permitted side effects, risky boundaries,
 
 Map only the current interaction region. Choose the first safe route in the router's route ladder. Record the target app/window/display and a `layout_epoch`. Increase the epoch after navigation, modal appearance, focus loss, window movement, zoom/DPI change, display change, or major rerender.
 
-Keep the control runtime and target binding alive. Do not repeatedly initialize or enumerate every application when the verified target window remains valid.
+Keep the control runtime and target binding alive. Do not repeatedly initialize or enumerate every application when the verified target window remains valid. For remote mode, match the verified cross-task playbook cache immediately after the first accepted observation in the same local runtime call. Use the best match only to rank hypotheses and choose a separating precheck; a cache miss preserves the ordinary path.
 
 Estimate the route before adding machinery. For one or two ordinary actions with no reusable semantic route, use the native controller unchanged. Do not create run state, tree deltas, or helper transactions that cannot remove a model roundtrip.
 
@@ -48,7 +48,7 @@ For a customer-entered private value, pause Agent input while retaining the leas
 
 ## G4-CLOSE
 
-Confirm terminal evidence, including the exact semantic name and location of every deliverable. For remote mode, clean and verify exact task-created nonessential artifacts on the remote side, end Agent input and the task lease, disconnect when the contract calls for it, then clean and verify the local controller side. Minimize or close the remote-client window and reveal the host desktop before reporting. Report the result, material side effects, both cleanup states, unresolved takeover points, and Token usage. Prefer exact host input/output/cache counts; when the host omits them, report the in-memory meter's labelled compact-view estimate and its basis. Reuse collected metrics so closeout adds no observation or model roundtrip. Never turn an attempted action into a completed result.
+Confirm terminal evidence, including the exact semantic name and location of every deliverable. After `success_verified=true`, distill semantic prechecks, steps, postconditions, and rollback into the verified playbook cache in the same closeout call; omit secrets, identities, paths, screenshots, coordinates, handles, and expiring indexes. For remote mode, clean and verify exact task-created nonessential artifacts on the remote side, end Agent input and the task lease, disconnect when the contract calls for it, then clean and verify the local controller side. Minimize or close the remote-client window and reveal the host desktop before reporting. Report the result, material side effects, both cleanup states, unresolved takeover points, and Token usage. Prefer exact host input/output/cache counts; when the host omits them, report the in-memory meter's labelled compact-view estimate and its basis. Reuse collected metrics so closeout adds no observation or model roundtrip. Never turn an attempted action into a completed result.
 
 ## Low-latency observation ladder
 

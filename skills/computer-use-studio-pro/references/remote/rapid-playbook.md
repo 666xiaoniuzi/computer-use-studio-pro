@@ -1,6 +1,6 @@
 # Rapid Remote Troubleshooting Playbook
 
-Read only the section matching the active hypothesis.
+This static playbook is the fallback for a verified-cache miss or a new branch. Read only the section matching the active hypothesis. A trusted cache hit may prioritize its first separating precheck, while every mutation still requires a fresh postcondition.
 
 ## Contents
 

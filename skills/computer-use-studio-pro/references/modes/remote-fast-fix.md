@@ -18,9 +18,10 @@ Default operation scope is `entire-bound-device`: every desktop, drive, setting,
 2. Bind one ToDesk/Sunlogin window by app, returned handle, stable title cue, and exact customer device ID.
 3. Capture one complete initial view. Record client state, device identity cue, geometry, visible modal, remote OS, and first useful symptom.
 4. Activate one connected-session authorization lease only after connected state and exact-device evidence pass.
-5. Afterwards prefer compact accessibility state, a relevant subtree, delta, crop, or cheap window enumeration. A semantic/layout mismatch promotes one screenshot.
-6. Define one postcondition; execute one reversible action or an eligible verified transaction; refresh and assert locally. When creating a deliverable, choose its task/title-derived final filename first and verify that exact name and extension after save.
-7. Return to the model only for a new decision, mismatch, confirmation boundary, recovery choice, or final verification.
+5. In the same cell as the first accepted observation, match the local verified-playbook cache using problem class, OS/app version buckets, remote client, and surface. Use at most the best compact candidate to prioritize the first separating precheck; a miss follows the ordinary path.
+6. Afterwards prefer compact accessibility state, a relevant subtree, delta, crop, or cheap window enumeration. A semantic/layout mismatch promotes one screenshot.
+7. Define one postcondition; execute one reversible action or an eligible verified transaction; refresh and assert locally. When creating a deliverable, choose its task/title-derived final filename first and verify that exact name and extension after save.
+8. Return to the model only for a new decision, mismatch, confirmation boundary, recovery choice, or final verification.
 
 For Codex, use `createRemoteClientSignalAdapter` and `createPersistentWindowSession` from `sky_fast_path.mjs`. Feed the signal adapter's synchronous connection/device/stop verifiers to the session. This classifies stable ToDesk/向日葵 state inside JavaScript instead of spending a model turn on unchanged text.
 
@@ -39,6 +40,10 @@ symptom | current hypothesis | last verified action/result | rollback head | nex
 ```
 
 Retain at most four unresolved/recent events. Use `needles` to select relevant tree lines. Request text or pixels only as needed; take a complete screenshot again for layout/resolution change, failed assertion, coordinate remap, reconnect, or terminal visual proof.
+
+## Verified cross-task playbook cache
+
+On Codex, attach `playbook_cache.mjs` to the persistent session. `initialObserve()` returns the best redacted semantic match in its existing cell; `verifySuccess()` automatically records verified steps and promotes the second identical success to `trusted`. A missed cached postcondition records failure and returns to normal diagnosis; repeated failures retire it. Device/account/secret/path/pixel/window/index data never enters the cache. Read [verified-playbook-cache.md](../remote/verified-playbook-cache.md) only for cache review.
 
 ## Authorization, target lock, and handoff
 

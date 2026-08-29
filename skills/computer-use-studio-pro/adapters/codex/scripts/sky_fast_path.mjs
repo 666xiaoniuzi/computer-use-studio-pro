@@ -599,6 +599,8 @@ export function createPersistentWindowSession(sky, options = {}) {
   const connectionVerifier = options.connectionVerifier;
   const authorizationVerifier = options.authorizationVerifier;
   const stopSignalVerifier = options.stopSignalVerifier;
+  const playbookCache = options.playbookCache ?? null;
+  const rawPlaybookContext = options.playbookContext ?? null;
   const disconnectErrorMatcher = options.disconnectErrorMatcher ?? defaultDisconnectErrorMatcher;
   const clock = options.clock ?? Date.now;
   for (const [name, callback] of Object.entries({
@@ -618,6 +620,13 @@ export function createPersistentWindowSession(sky, options = {}) {
   }
   if (mode === "remote-fast-fix" && options.authorizationGranted !== true && !authorizationVerifier) {
     throw new Error("remote-fast-fix requires authorizationGranted: true or an authorizationVerifier");
+  }
+  if (playbookCache != null
+      && (typeof playbookCache.match !== "function" || typeof playbookCache.recordVerifiedSuccess !== "function")) {
+    throw new Error("playbookCache must expose match and recordVerifiedSuccess");
+  }
+  if (rawPlaybookContext != null && typeof rawPlaybookContext !== "object" && typeof rawPlaybookContext !== "function") {
+    throw new Error("playbookContext must be an object or function");
   }
   const maxBurstActions = options.maxBurstActions ?? 3;
   const maxSamePathAttempts = options.maxSamePathAttempts ?? 2;
@@ -666,7 +675,106 @@ export function createPersistentWindowSession(sky, options = {}) {
   let lastVerifiedCheckpoint = null;
   let boundLabeledDeviceIds = null;
   let lastObservationAt = null;
+  let playbookContext = null;
+  let playbookMatch = null;
+  let playbookRecording = null;
+  const playbookTrace = {
+    title: compactText(options.playbookTitle ?? taskScope, 100),
+    prechecks: [...(options.playbookPrechecks ?? [])].slice(0, 3),
+    steps: [],
+    success_checks: [],
+    rollback: [...(options.playbookRollback ?? [])].slice(0, 2),
+  };
   const attempts = new Map();
+
+  async function resolvePlaybookContext(nextState) {
+    if (!playbookCache || mode !== "remote-fast-fix") return null;
+    try {
+      const context = typeof rawPlaybookContext === "function"
+        ? await rawPlaybookContext(nextState, { task_scope: taskScope, operation_scope: operationScope })
+        : rawPlaybookContext;
+      return context && typeof context === "object" ? context : null;
+    } catch (error) {
+      playbookMatch = { matched: false, reason: "context-error", detail: compactText(error?.message, 160), recipes: [] };
+      return null;
+    }
+  }
+
+  async function matchVerifiedPlaybook(nextState) {
+    if (!playbookCache || mode !== "remote-fast-fix") return null;
+    playbookContext = await resolvePlaybookContext(nextState);
+    if (!playbookContext) return playbookMatch;
+    try {
+      playbookMatch = await playbookCache.match(playbookContext, {
+        limit: 1,
+        maxChars: options.playbookMatchChars ?? 900,
+      });
+    } catch (error) {
+      playbookMatch = { matched: false, reason: "cache-error", detail: compactText(error?.message, 160), recipes: [] };
+    }
+    return playbookMatch;
+  }
+
+  function expectationLabel(expect) {
+    if (expect == null) return "postcondition verified";
+    if (typeof expect === "string") return compactText(expect, 140);
+    if (typeof expect === "object") {
+      for (const key of ["includes", "titleIncludes", "focusedIncludes", "notIncludes"]) {
+        if (expect[key] != null) return compactText(`${key}: ${expect[key]}`, 140);
+      }
+    }
+    return "postcondition verified";
+  }
+
+  function semanticTarget(action, priorState) {
+    if (action?.playbookTarget) return compactText(action.playbookTarget, 100);
+    const index = action?.args?.element_index;
+    if (Number.isInteger(index)) {
+      const line = String(priorState?.accessibility?.tree ?? "")
+        .split(/\r?\n/u)
+        .find((item) => new RegExp(`^\\s*${index}\\s+`, "u").test(item));
+      if (line) return compactText(line.replace(/^\s*\d+\s+/u, ""), 100);
+    }
+    if (["type_text", "press_key", "set_value"].includes(action?.method)) {
+      return compactText(priorState?.accessibility?.focused_element ?? "focused editable", 100);
+    }
+    return "current remote surface";
+  }
+
+  function rememberPlaybookStep(action, priorState, expect, kind = null) {
+    if (!playbookCache || mode !== "remote-fast-fix" || !action?.method || playbookTrace.steps.length >= 6) return;
+    playbookTrace.steps.push({
+      action: compactText(kind ?? action.method, 60),
+      target: semanticTarget(action, priorState),
+      expect: compactText(action.playbookExpect ?? expectationLabel(expect), 140),
+      ...(action.playbookParameter ? { parameter: compactText(action.playbookParameter, 60) } : {}),
+    });
+  }
+
+  async function promoteVerifiedPlaybook() {
+    if (!playbookCache || mode !== "remote-fast-fix" || !playbookContext || playbookTrace.steps.length === 0) return null;
+    playbookTrace.success_checks = [compactText(options.playbookSuccessLabel ?? "configured terminal success condition verified", 140)];
+    try {
+      playbookRecording = await playbookCache.recordVerifiedSuccess({
+        context: playbookContext,
+        recipe: playbookTrace,
+        evidence: { success_verified: true },
+      });
+    } catch (error) {
+      playbookRecording = { recorded: false, reason: "cache-error", detail: compactText(error?.message, 160) };
+    }
+    return playbookRecording;
+  }
+
+  async function recordMatchedPlaybookFailure(reason = "cached-postcondition-missed") {
+    const id = playbookMatch?.recipes?.[0]?.id;
+    if (!id || typeof playbookCache?.recordFailure !== "function") return { recorded: false, reason: "no-matched-playbook" };
+    try {
+      return await playbookCache.recordFailure({ id, reason: compactText(reason, 120) });
+    } catch (error) {
+      return { recorded: false, reason: "cache-error", detail: compactText(error?.message, 160) };
+    }
+  }
 
   function currentTime() {
     const value = Number(clock());
@@ -937,7 +1045,8 @@ export function createPersistentWindowSession(sky, options = {}) {
       initialized = true;
       pendingVisualRefresh = false;
       rememberVerifiedCheckpoint("initial-map", result.state);
-      return withSessionMeta(result, changes, { reused: false });
+      await matchVerifiedPlaybook(result.state);
+      return withSessionMeta(result, changes, { reused: false, playbook_match: playbookMatch });
     } catch (error) {
       handleRuntimeError(error, "initial-observation");
       throw error;
@@ -988,6 +1097,7 @@ export function createPersistentWindowSession(sky, options = {}) {
     try {
       successVerified = false;
       successEpoch = null;
+      const priorState = state;
       const nextState = await actAndRefresh(sky, state, action, refresh);
       const changes = acceptState(nextState);
       const verified = refresh.expect != null;
@@ -996,7 +1106,10 @@ export function createPersistentWindowSession(sky, options = {}) {
           && (refresh.screenshotOnSemanticChange ?? screenshotOnSemanticChange)) {
         visual = await observe("semantic-change", { needles: refresh.needles });
       }
-      if (verified) rememberVerifiedCheckpoint("action", state);
+      if (verified) {
+        rememberVerifiedCheckpoint("action", state);
+        rememberPlaybookStep(action, priorState, refresh.expect);
+      }
       return withSessionMeta({
         ok: true,
         verified,
@@ -1032,6 +1145,7 @@ export function createPersistentWindowSession(sky, options = {}) {
     const inputLease = assertObservationFresh(steps);
     successVerified = false;
     successEpoch = null;
+    const priorState = state;
     const result = await runVerifiedTransaction(sky, state, steps, {
       ...transactionOptions,
       transactionClass: transactionOptions.transactionClass ?? "local-reversible",
@@ -1060,7 +1174,10 @@ export function createPersistentWindowSession(sky, options = {}) {
     if (!result.ok && result.outcome === "unknown" && mode === "remote-fast-fix" && !stopLatched && authorizationStatus === "active") {
       transition("stalled", "transaction-outcome-unknown");
     }
-    if (result.ok) rememberVerifiedCheckpoint("transaction", state);
+    if (result.ok) {
+      rememberVerifiedCheckpoint("transaction", state);
+      for (const step of steps) rememberPlaybookStep(step, priorState, step.expect, "verified-transaction-step");
+    }
     return withSessionMeta(result, changes, { promoted_screenshot: Boolean(visual), input_lease: inputLease });
   }
 
@@ -1073,6 +1190,7 @@ export function createPersistentWindowSession(sky, options = {}) {
     const inputLease = assertObservationFresh(steps);
     successVerified = false;
     successEpoch = null;
+    const priorState = state;
     const result = await runKeyboardBurst(sky, state, steps, {
       ...burstOptions,
       transactionClass: burstOptions.transactionClass ?? "local-reversible",
@@ -1089,7 +1207,10 @@ export function createPersistentWindowSession(sky, options = {}) {
     if (!result.ok && result.outcome === "unknown" && mode === "remote-fast-fix" && !stopLatched && authorizationStatus === "active") {
       transition("stalled", "keyboard-burst-outcome-unknown");
     }
-    if (result.verified) rememberVerifiedCheckpoint("keyboard-burst", state);
+    if (result.verified) {
+      rememberVerifiedCheckpoint("keyboard-burst", state);
+      rememberPlaybookStep({ method: "keyboard-burst", playbookTarget: burstOptions.playbookTarget }, priorState, burstOptions.finalExpect, "verified-keyboard-burst");
+    }
     return withSessionMeta(result, changes, { promoted_screenshot: false, input_lease: inputLease });
   }
 
@@ -1464,14 +1585,17 @@ export function createPersistentWindowSession(sky, options = {}) {
     const check = expectationResult(observation.state, success);
     successVerified = check.ok;
     successEpoch = check.ok ? { layout: layoutEpoch, semantic: semanticEpoch } : null;
-    if (check.ok) rememberVerifiedCheckpoint("terminal-success", observation.state);
+    if (check.ok) {
+      rememberVerifiedCheckpoint("terminal-success", observation.state);
+      await promoteVerifiedPlaybook();
+    }
     return withSessionMeta({
       ok: check.ok,
       outcome: check.ok ? "verified" : "failed",
       reason: check.reason ?? null,
       state: observation.state,
       summary: observation.summary,
-    });
+    }, {}, { playbook_recording: playbookRecording });
   }
 
   function snapshot(summaryOptions = {}) {
@@ -1522,6 +1646,7 @@ export function createPersistentWindowSession(sky, options = {}) {
     rebind,
     waitUntil,
     verifySuccess,
+    recordMatchedPlaybookFailure,
     assertInputAllowed,
     assertObservationFresh,
     observationAgeMs,
@@ -2310,6 +2435,47 @@ export async function selfTest() {
       || staleLeaseSession.snapshot().observation_age_ms !== 51) {
     throw new Error("expired observation lease reached an input action");
   }
+  value = "";
+  const playbookCalls = { match: 0, record: 0, failure: 0 };
+  const mockPlaybookCache = {
+    async match(context) {
+      playbookCalls.match += 1;
+      return { matched: true, recipes: [{ id: "pb-demo", status: "trusted", score: 12, steps: [{ action: "inspect", target: "plugin status", expect: "classified" }] }] };
+    },
+    async recordVerifiedSuccess(input) {
+      playbookCalls.record += 1;
+      if (input.evidence?.success_verified !== true || input.recipe?.steps?.length !== 1) throw new Error("invalid automatic playbook recording");
+      return { recorded: true, id: "pb-recorded", status: "candidate", successes: 1 };
+    },
+    async recordFailure() { playbookCalls.failure += 1; return { recorded: true }; },
+  };
+  const playbookSession = createPersistentWindowSession(mockSky, {
+    mode: "remote-fast-fix",
+    window,
+    targetApp: "demo",
+    targetTitleIncludes: "Demo",
+    remoteDeviceId,
+    authorizationGranted: true,
+    taskScope: "repair plugin download",
+    success: { includes: "playbook-done" },
+    playbookCache: mockPlaybookCache,
+    playbookContext: { problem_class: "plugin-install", os_family: "windows", app: "codex", remote_client: "sunlogin" },
+    playbookTitle: "Plugin download repair",
+    playbookPrechecks: ["Read exact error"],
+    playbookSuccessLabel: "Installed entry visible",
+  });
+  const playbookInitial = await playbookSession.initialObserve();
+  if (!playbookInitial.playbook_match?.matched || playbookCalls.match !== 1) throw new Error("automatic playbook match failed");
+  await playbookSession.act(
+    { method: "type_text", args: { text: "playbook-done" }, playbookTarget: "plugin status" },
+    { expect: { includes: "playbook-done" }, playbookExpect: "plugin status updated" },
+  );
+  const playbookVerified = await playbookSession.verifySuccess();
+  if (!playbookVerified.success_verified || !playbookVerified.playbook_recording?.recorded || playbookCalls.record !== 1) {
+    throw new Error("automatic verified playbook promotion failed");
+  }
+  const playbookFailure = await playbookSession.recordMatchedPlaybookFailure();
+  if (!playbookFailure.recorded || playbookCalls.failure !== 1) throw new Error("matched playbook failure hook failed");
   value = "";
   const redacted = compactState({ window, accessibility: { focused_element: "Edit", document_text: "token=abc123456789 and Bearer abcdefghijklmnop; user@example.com; +86 138 0013 8000", tree: "Edit token=abc123456789" }, screenshots: [] });
   if (JSON.stringify(redacted).includes("abc123456789") || JSON.stringify(redacted).includes("abcdefghijklmnop") || JSON.stringify(redacted).includes("user@example.com") || JSON.stringify(redacted).includes("138 0013 8000")) {

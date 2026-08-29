@@ -24,6 +24,7 @@
 
 - Success requires fresh observed evidence. Ambiguous evidence is `unknown`.
 - Keep raw state inside the runtime. Emit a compact/token view, normally about 900 characters; expand only for ambiguity or recovery.
+- Match one compact verified playbook inside the first remote-observation cell and auto-promote semantic steps only after fresh success; a miss adds no model turn.
 - Request only the observation channel needed for the next decision. Reuse stable handles and use local polling/window enumeration for unchanged waits.
 - Retry the same `failure signature + strategy` at most twice, then remap or pivot. Preserve the last verified checkpoint and rollback head.
 - Disconnect revokes remote authorization. Same-device reconnect requires fresh authorization and complete remapping. Device conflict or emergency stop latches stopped.

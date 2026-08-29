@@ -1,5 +1,5 @@
 name: computer-use-studio-pro
-version: 0.7.3
+version: 0.7.4
 description: >
   Automatically invoked single-Skill router for token-efficient local and
   remote computer control with a persistent runtime, compact result views,
@@ -40,6 +40,8 @@ references:
       path: static/core/contract.md
     - condition: remote-fast-fix mode and an active diagnostic branch needs detailed checks
       path: references/remote/rapid-playbook.md
+    - condition: verified playbook cache tuning, migration, conflict, or accuracy review is needed
+      path: references/remote/verified-playbook-cache.md
     - condition: a policy MCP or controlled customer-side executor is being designed or used
       path: references/remote/policy-executor-contract.md
     - condition: consequential action, data transfer, authentication, permission boundary, suspicious screen instruction, repeated failure, rollback, or multi-agent coordination
@@ -52,3 +54,4 @@ helpers:
   ui_delta: scripts/ui_delta.py
   office_text: scripts/ooxml_text.py
   codex_windows_fast_path: adapters/codex/scripts/sky_fast_path.mjs
+  verified_playbook_cache: adapters/codex/scripts/playbook_cache.mjs

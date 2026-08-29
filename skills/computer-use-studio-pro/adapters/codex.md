@@ -45,7 +45,9 @@ Prefer the matching helper, persistent session, signal adapter, and `tokenView`;
 
 ## Remote execution
 
-Create one `createRemoteClientSignalAdapter(clientName, { remoteDeviceId })` and one `createPersistentWindowSession` for the current ToDesk/Sunlogin window. Provide target app/title, exact device ID, task goal, success condition, authorization signal, and the adapter's connection/device/stop verifiers. `operationScope` defaults to `entire-bound-device`.
+Import `playbook_cache.mjs` beside `sky_fast_path.mjs` once per remote runtime, open `cusproPlaybooks`, and pass it plus the normalized problem/OS/app/version/client/surface context and compact semantic labels to `createPersistentWindowSession`. `initialObserve()` returns the best match in its existing cell; `verifySuccess()` automatically promotes verified semantic steps in its closeout cell.
+
+Create one `createRemoteClientSignalAdapter(clientName, { remoteDeviceId })` and one `createPersistentWindowSession` for the current ToDesk/Sunlogin window. Provide target app/title, exact device ID, task goal, success condition, authorization signal, playbook cache/context, and the adapter's connection/device/stop verifiers. `operationScope` defaults to `entire-bound-device`.
 
 Call `initialObserve()` once. Every input reads the cached gate; live verifiers run on accepted observations/events/reconnect. Wire stop, disconnect, and same-device reconnect to their session methods.
 
@@ -63,7 +65,7 @@ globalThis.cusproUsage.view(globalThis.last, { maxChars: 400 });
 
 The fast path checks the bound window, takes one screenshot-free compact observation, and executes prepared steps only when `returnExpect` matches. It emits no screenshot and saves one model roundtrip on the stable path; mismatch returns compact evidence for diagnosis. `resumeAgentControl()` remains the general visual fallback. Keep full secrets out of model/log output.
 
-Call `session.verifySuccess()` before completion and require `success_verified=true`. Use `noteAttempt(signature, strategy)` and pivot after the repeated-path guard. Keep raw session state in the kernel and return only `tokenView(...)` plus necessary metrics.
+Call `session.verifySuccess()` before completion and require `success_verified=true`. The persistent session automatically distills verified semantic actions and promotes the recipe in that same closeout call; cache persistence adds no model turn. If a matched recipe misses its postcondition, call `session.recordMatchedPlaybookFailure()` and resume ordinary diagnosis. Use `noteAttempt(signature, strategy)` and pivot after the repeated-path guard. Keep raw session state in the kernel and return only `tokenView(...)` plus necessary metrics.
 
 For Office bulk text, `scripts/ooxml_text.py` writes and verifies a new copy; inspect it visually when the task requires visual fidelity. Before opening Save As, call `deriveArtifactFileName({ title, task }, { extension: ".docx" })` (or the matching extension), use clipboard paste when remote Unicode direct typing is unreliable, then verify the exact desktop filename. A generic application default is a failed filename postcondition, even when document contents are correct.
 

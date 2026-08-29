@@ -39,11 +39,12 @@ An explicit task grants continuous task authorization for ordinary low-risk reve
 ## Fast execution loop
 
 1. Keep one runtime and verified target binding warm.
-2. Define the next observable postcondition.
-3. Use the lowest-cost reliable route: connector/API/file -> DOM/accessibility -> direct value/shortcut -> crop/OCR -> fresh window-relative coordinate -> fresh absolute coordinate.
-4. Execute one action and refresh in the same tool call. Use a verified transaction for up to three deterministic reversible actions on one stable page; each step refreshes and asserts. Use `runKeyboardBurst` only for its strict stable single-field keyboard case.
-5. Return to the model only for a new decision, mismatch, confirmation boundary, recovery choice, or final report.
-6. Finish only from fresh success evidence. After two unchanged attempts with the same failure signature and strategy, pivot.
+2. In remote mode, match one compact verified playbook after the first accepted observation in the same runtime cell; use it only to rank the first precheck, and auto-promote only after `success_verified=true`.
+3. Define the next observable postcondition.
+4. Use the lowest-cost reliable route: connector/API/file -> DOM/accessibility -> direct value/shortcut -> crop/OCR -> fresh window-relative coordinate -> fresh absolute coordinate.
+5. Execute one action and refresh in the same tool call. Use a verified transaction for up to three deterministic reversible actions on one stable page; each step refreshes and asserts. Use `runKeyboardBurst` only for its strict stable single-field keyboard case.
+6. Return to the model only for a new decision, mismatch, confirmation boundary, recovery choice, or final report.
+7. Finish only from fresh success evidence. After two unchanged attempts with the same failure signature and strategy, pivot.
 
 Treat screenshot IDs, element indexes, coordinates, focus, and crops as expiring leases. Refresh on layout change, failure, stale lease, coordinate remap, or terminal verification.
 
