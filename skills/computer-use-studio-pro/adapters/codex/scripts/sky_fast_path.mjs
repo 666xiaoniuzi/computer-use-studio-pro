@@ -677,7 +677,15 @@ export function createPersistentWindowSession(sky, options = {}) {
   const maxBurstActions = options.maxBurstActions ?? 3;
   const maxSamePathAttempts = options.maxSamePathAttempts ?? 2;
   const defaultHandoffSettleMs = options.handoffSettleMs ?? 350;
-  const screenshotOnSemanticChange = options.screenshotOnSemanticChange ?? mode === "remote-fast-fix";
+  // Legacy screenshotOnSemanticChange now selects a first-pass capture.
+  // Remote mode defaults to text+screenshot in the same expensive state call;
+  // explicit false retains the semantic-only fast path for bounded checks.
+  const singlePassScreenshot = options.singlePassScreenshot
+    ?? options.screenshotOnSemanticChange
+    ?? mode === "remote-fast-fix";
+  if (typeof singlePassScreenshot !== "boolean") {
+    throw new TypeError("singlePassScreenshot must be boolean");
+  }
   const observationLeaseMs = Object.freeze({
     coordinate: options.coordinateLeaseMs ?? (mode === "remote-fast-fix" ? 15_000 : 30_000),
     focus: options.focusLeaseMs ?? (mode === "remote-fast-fix" ? 45_000 : 60_000),
@@ -1103,33 +1111,23 @@ export function createPersistentWindowSession(sky, options = {}) {
     if (!initialized) return initialObserve(observeOptions);
     const screenshotReasons = new Set(["layout-change", "semantic-change", "failure", "coordinate", "verification", "recovery"]);
     const includeScreenshot = observeOptions.include_screenshot
-      ?? (pendingVisualRefresh || screenshotReasons.has(reason));
+      ?? (pendingVisualRefresh
+        || screenshotReasons.has(reason)
+        || (observeOptions.screenshotOnSemanticChange ?? singlePassScreenshot));
     try {
-      let result = await observeCompact(sky, window, {
+      const result = await observeCompact(sky, window, {
         ...options,
         ...observeOptions,
         include_screenshot: includeScreenshot,
         include_text: observeOptions.include_text ?? true,
       });
       const changes = acceptState(result.state);
-      let promotedScreenshot = false;
-      if (!includeScreenshot && changes.semanticChanged
-          && (observeOptions.screenshotOnSemanticChange ?? screenshotOnSemanticChange)) {
-        const promoted = await observeCompact(sky, window, {
-          ...options,
-          ...observeOptions,
-          include_screenshot: true,
-          include_text: observeOptions.include_text ?? true,
-        });
-        const promotedChanges = acceptState(promoted.state);
-        mergeMetrics(result.metrics, promoted.metrics);
-        result = { ...promoted, metrics: result.metrics };
-        changes.layoutChanged ||= promotedChanges.layoutChanged;
-        changes.semanticChanged ||= promotedChanges.semanticChanged;
-        promotedScreenshot = true;
-      }
       if ((result.state?.screenshots?.length ?? 0) > 0) pendingVisualRefresh = false;
-      return withSessionMeta(result, changes, { reason, promoted_screenshot: promotedScreenshot });
+      return withSessionMeta(result, changes, {
+        reason,
+        promoted_screenshot: false,
+        single_pass_screenshot: includeScreenshot,
+      });
     } catch (error) {
       handleRuntimeError(error, `observation-${reason}`);
       throw error;
@@ -1144,14 +1142,14 @@ export function createPersistentWindowSession(sky, options = {}) {
       successVerified = false;
       successEpoch = null;
       const priorState = state;
-      const nextState = await actAndRefresh(sky, state, action, refresh);
+      const includeScreenshot = refresh.include_screenshot
+        ?? (refresh.screenshotOnSemanticChange ?? singlePassScreenshot);
+      const nextState = await actAndRefresh(sky, state, action, {
+        ...refresh,
+        include_screenshot: includeScreenshot,
+      });
       const changes = acceptState(nextState);
       const verified = refresh.expect != null;
-      let visual = null;
-      if ((nextState?.screenshots?.length ?? 0) === 0 && changes.semanticChanged
-          && (refresh.screenshotOnSemanticChange ?? screenshotOnSemanticChange)) {
-        visual = await observe("semantic-change", { needles: refresh.needles });
-      }
       if (verified) {
         rememberVerifiedCheckpoint("action", state);
         rememberPlaybookStep(action, priorState, refresh.expect);
@@ -1162,16 +1160,30 @@ export function createPersistentWindowSession(sky, options = {}) {
         outcome: verified ? "verified" : "observed-unverified",
         state,
         summary: compactState(state, refresh),
-        visual_summary: visual?.summary ?? null,
-      }, changes, { promoted_screenshot: Boolean(visual), input_lease: inputLease });
+        visual_summary: includeScreenshot ? compactState(state, { ...refresh, maxChars: Math.min(refresh.maxChars ?? 900, 500) }) : null,
+      }, changes, {
+        promoted_screenshot: false,
+        single_pass_screenshot: includeScreenshot,
+        input_lease: inputLease,
+      });
     } catch (error) {
       const outcomeUnknown = error?.outcome !== "failed";
       handleRuntimeError(error, "action-or-refresh");
       try {
-        const diagnostic = await observe("failure", { needles: refresh.needles });
-        error.diagnostic = diagnostic.summary;
-        error.layout_epoch = diagnostic.layout_epoch;
-        error.semantic_epoch = diagnostic.semantic_epoch;
+        if (error?.state?.window && (error.state.screenshots?.length ?? 0) > 0) {
+          const changes = acceptState(error.state);
+          error.diagnostic = compactState(error.state, { ...refresh, needles: refresh.needles });
+          error.layout_epoch = layoutEpoch;
+          error.semantic_epoch = semanticEpoch;
+          error.single_pass_screenshot = true;
+          error.layout_changed = changes.layoutChanged;
+          error.semantic_changed = changes.semanticChanged;
+        } else {
+          const diagnostic = await observe("failure", { needles: refresh.needles });
+          error.diagnostic = diagnostic.summary;
+          error.layout_epoch = diagnostic.layout_epoch;
+          error.semantic_epoch = diagnostic.semantic_epoch;
+        }
       } catch (diagnosticError) {
         error.diagnostic_error = String(diagnosticError);
       }
@@ -1192,8 +1204,11 @@ export function createPersistentWindowSession(sky, options = {}) {
     successVerified = false;
     successEpoch = null;
     const priorState = state;
+    const includeScreenshot = transactionOptions.include_screenshot
+      ?? (transactionOptions.screenshotOnSemanticChange ?? singlePassScreenshot);
     const result = await runVerifiedTransaction(sky, state, steps, {
       ...transactionOptions,
+      include_screenshot: includeScreenshot,
       transactionClass: transactionOptions.transactionClass ?? "local-reversible",
       beforeAction: async (currentState, index, step) => {
         assertInputAllowed(currentState);
@@ -1210,11 +1225,12 @@ export function createPersistentWindowSession(sky, options = {}) {
         && transactionOptions.promoteFailureScreenshot !== false) {
       visual = await observe("failure", { needles: transactionOptions.needles });
       result.diagnostic = visual.summary;
-    } else if (result.ok && (result.state?.screenshots?.length ?? 0) === 0
-        && changes.semanticChanged
-        && (transactionOptions.screenshotOnSemanticChange ?? screenshotOnSemanticChange)) {
-      visual = await observe("semantic-change", { needles: transactionOptions.needles });
-      result.visual_summary = visual.summary;
+    }
+    if (result.ok && includeScreenshot) {
+      result.visual_summary = compactState(result.state, {
+        ...transactionOptions,
+        maxChars: Math.min(transactionOptions.maxChars ?? 900, 500),
+      });
     }
     if (visual?.metrics && result.metrics) mergeMetrics(result.metrics, visual.metrics);
     if (!result.ok && result.outcome === "unknown" && mode === "remote-fast-fix" && !stopLatched && authorizationStatus === "active") {
@@ -1224,7 +1240,11 @@ export function createPersistentWindowSession(sky, options = {}) {
       rememberVerifiedCheckpoint("transaction", state);
       for (const step of steps) rememberPlaybookStep(step, priorState, step.expect, "verified-transaction-step");
     }
-    return withSessionMeta(result, changes, { promoted_screenshot: Boolean(visual), input_lease: inputLease });
+    return withSessionMeta(result, changes, {
+      promoted_screenshot: Boolean(visual),
+      single_pass_screenshot: includeScreenshot,
+      input_lease: inputLease,
+    });
   }
 
   async function keyboardBurst(steps, burstOptions = {}) {
@@ -1237,8 +1257,11 @@ export function createPersistentWindowSession(sky, options = {}) {
     successVerified = false;
     successEpoch = null;
     const priorState = state;
+    const includeScreenshot = burstOptions.include_screenshot
+      ?? (burstOptions.screenshotOnSemanticChange ?? singlePassScreenshot);
     const result = await runKeyboardBurst(sky, state, steps, {
       ...burstOptions,
+      include_screenshot: includeScreenshot,
       transactionClass: burstOptions.transactionClass ?? "local-reversible",
       beforeAction: async (currentState, index, step) => {
         assertInputAllowed(currentState);
@@ -1257,7 +1280,11 @@ export function createPersistentWindowSession(sky, options = {}) {
       rememberVerifiedCheckpoint("keyboard-burst", state);
       rememberPlaybookStep({ method: "keyboard-burst", playbookTarget: burstOptions.playbookTarget }, priorState, burstOptions.finalExpect, "verified-keyboard-burst");
     }
-    return withSessionMeta(result, changes, { promoted_screenshot: false, input_lease: inputLease });
+    return withSessionMeta(result, changes, {
+      promoted_screenshot: false,
+      single_pass_screenshot: includeScreenshot,
+      input_lease: inputLease,
+    });
   }
 
   function noteAttempt(signature, strategy) {
@@ -1516,6 +1543,7 @@ export function createPersistentWindowSession(sky, options = {}) {
       risk: transactionOptions.risk ?? "reversible",
       maxChars: transactionOptions.maxChars ?? 400,
       screenshotLimit: transactionOptions.screenshotLimit ?? 0,
+      include_screenshot: transactionOptions.include_screenshot ?? false,
       screenshotOnSemanticChange: false,
       promoteFailureScreenshot: false,
     });
@@ -1598,25 +1626,25 @@ export function createPersistentWindowSession(sky, options = {}) {
   async function waitUntil(expect, pollOptions = {}) {
     if (!initialized) await initialObserve();
     try {
+      const includeScreenshot = pollOptions.include_screenshot
+        ?? (pollOptions.screenshotOnSemanticChange ?? singlePassScreenshot);
       const result = await pollUntil(sky, window, expect, {
         intervalMs: 150,
         backoffFactor: 1.6,
         maxIntervalMs: 1200,
         ...pollOptions,
+        include_screenshot: includeScreenshot,
         observationGuard: async (currentState, attempt) => {
           validateRemoteState(currentState);
           if (pollOptions.observationGuard) await pollOptions.observationGuard(currentState, attempt);
         },
       });
       const changes = result.state?.window ? acceptState(result.state) : {};
-      let visual = null;
-      if (changes.semanticChanged && (pollOptions.screenshotOnSemanticChange ?? screenshotOnSemanticChange)) {
-        visual = await observe("semantic-change", { needles: pollOptions.needles });
-      }
       if (result.ok) rememberVerifiedCheckpoint("wait-condition", result.state);
       return withSessionMeta(result, changes, {
-        promoted_screenshot: Boolean(visual),
-        visual_summary: visual?.summary ?? null,
+        promoted_screenshot: false,
+        single_pass_screenshot: includeScreenshot,
+        visual_summary: includeScreenshot ? compactState(result.state, { ...pollOptions, maxChars: Math.min(pollOptions.maxChars ?? 900, 500) }) : null,
       });
     } catch (error) {
       handleRuntimeError(error, "wait");
@@ -1788,8 +1816,8 @@ export async function runVerifiedTransaction(sky, observation, steps, options = 
     try {
       state = await sky.get_window_state({
         window: state.window,
-        include_screenshot: step.include_screenshot ?? nextNeedsScreenshot(steps[index + 1]),
-        include_text: step.include_text ?? true,
+        include_screenshot: step.include_screenshot ?? options.include_screenshot ?? nextNeedsScreenshot(steps[index + 1]),
+        include_text: step.include_text ?? options.include_text ?? true,
       });
       metrics.observations += 1;
       metrics.sky_calls += 1;
@@ -2046,7 +2074,11 @@ export async function pollUntil(sky, window, expect, options = {}) {
   let delayMs = initialIntervalMs;
   let state;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    state = await sky.get_window_state({ window, include_screenshot: false, include_text: true });
+    state = await sky.get_window_state({
+      window,
+      include_screenshot: options.include_screenshot ?? false,
+      include_text: options.include_text ?? true,
+    });
     if (options.observationGuard) await options.observationGuard(state, attempt);
     const check = expectationResult(state, expect);
     if (check.ok) return { ok: true, attempts: attempt + 1, state, summary: compactState(state, options) };
@@ -2081,8 +2113,8 @@ export async function waitForStableReadyState(sky, window, expect, options = {})
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     state = await sky.get_window_state({
       window,
-      include_screenshot: false,
-      include_text: true,
+      include_screenshot: options.include_screenshot ?? false,
+      include_text: options.include_text ?? true,
     });
     metrics.observations += 1;
     metrics.sky_calls += 1;
@@ -2531,8 +2563,8 @@ export async function selfTest() {
     window,
     accessibility: { focused_element: "Edit", document_text: `token=abc123456789 ${"x".repeat(2000)}`, tree: "Edit\nButton Save" },
     screenshots: [
-      { id: "old", zIndex: 0, width: 10, height: 10, originX: 0, originY: 0 },
-      { id: "top", zIndex: 1, width: 10, height: 10, originX: 0, originY: 0 },
+      { id: "old", zIndex: 0, width: 10, height: 10, originX: 0, originY: 0, data: "PIXEL_SECRET_OLD" },
+      { id: "top", zIndex: 1, width: 10, height: 10, originX: 0, originY: 0, data: "PIXEL_SECRET_TOP" },
     ],
   };
   const compactTokenView = tokenView({ ok: true, state: tokenState, metrics: { actions: 1, observation_chars: 9999, compact_chars: 500 } }, { maxChars: 400 });
@@ -2562,7 +2594,8 @@ export async function selfTest() {
   const noScreenshotState = compactState(tokenState, { maxChars: 400, screenshotLimit: 0 });
   const tokenJson = JSON.stringify(compactTokenView);
   if ("state" in compactTokenView || tokenJson.includes("abc123456789") || tokenJson.includes("observation_chars")
-      || compactTokenView.summary.screenshots.length !== 1 || noScreenshotState.screenshots.length !== 0) {
+      || tokenJson.includes("PIXEL_SECRET") || compactTokenView.summary.screenshots.length !== 1
+      || noScreenshotState.screenshots.length !== 0) {
     throw new Error("token-view compaction self-test failed");
   }
   let rejected = false;
@@ -2581,16 +2614,103 @@ export async function selfTest() {
   });
   const initial = await persistent.initialObserve();
   if (initial.reused || initial.metrics.screenshot_regions !== 1 || initial.layout_epoch !== 0) throw new Error("persistent session missed initial full observation");
+  let stateCallsBefore = calls.filter(([name]) => name === "get_window_state").length;
   const routine = await persistent.observe("routine");
-  if (routine.metrics.screenshot_regions !== 0 || routine.layout_epoch !== 0 || routine.semantic_changed) throw new Error("routine observation captured an unnecessary screenshot or changed epoch");
-  value = "semantic change";
-  const changedView = await persistent.observe("routine");
-  if (!changedView.semantic_changed || !changedView.promoted_screenshot || changedView.metrics.screenshot_regions !== 1 || changedView.semantic_epoch !== 1) {
-    throw new Error("semantic change was not promoted to a visual refresh");
+  let stateCallDelta = calls.filter(([name]) => name === "get_window_state").length - stateCallsBefore;
+  if (routine.metrics.screenshot_regions !== 1 || routine.metrics.observations !== 1 || stateCallDelta !== 1
+      || routine.layout_epoch !== 0 || routine.semantic_changed || routine.promoted_screenshot
+      || !routine.single_pass_screenshot) {
+    throw new Error("remote routine observation missed single-pass text+screenshot capture");
   }
+  value = "semantic change";
+  stateCallsBefore = calls.filter(([name]) => name === "get_window_state").length;
+  const changedView = await persistent.observe("routine");
+  stateCallDelta = calls.filter(([name]) => name === "get_window_state").length - stateCallsBefore;
+  if (!changedView.semantic_changed || changedView.promoted_screenshot || !changedView.single_pass_screenshot
+      || changedView.metrics.screenshot_regions !== 1 || changedView.metrics.observations !== 1
+      || changedView.metrics.sky_calls !== 1 || stateCallDelta !== 1 || changedView.semantic_epoch !== 1) {
+    throw new Error("semantic change paid more than one visual observation");
+  }
+  value = "semantic only change";
+  stateCallsBefore = calls.filter(([name]) => name === "get_window_state").length;
+  const semanticOnlyView = await persistent.observe("routine", { screenshotOnSemanticChange: false });
+  stateCallDelta = calls.filter(([name]) => name === "get_window_state").length - stateCallsBefore;
+  if (!semanticOnlyView.semantic_changed || semanticOnlyView.metrics.screenshot_regions !== 0
+      || semanticOnlyView.metrics.observations !== 1 || stateCallDelta !== 1
+      || semanticOnlyView.promoted_screenshot || semanticOnlyView.single_pass_screenshot) {
+    throw new Error("explicit semantic-only observation lost its zero-screenshot single call");
+  }
+  stateCallsBefore = calls.filter(([name]) => name === "get_window_state").length;
+  const onePassAction = await persistent.act(
+    { method: "type_text", args: { text: "one-pass-action" } },
+    { expect: { includes: "one-pass-action" } },
+  );
+  stateCallDelta = calls.filter(([name]) => name === "get_window_state").length - stateCallsBefore;
+  if (!onePassAction.ok || !onePassAction.single_pass_screenshot || onePassAction.promoted_screenshot
+      || (onePassAction.state?.screenshots?.length ?? 0) !== 1 || stateCallDelta !== 1) {
+    throw new Error("remote action refresh used more than one state call");
+  }
+
+  stateCallsBefore = calls.filter(([name]) => name === "get_window_state").length;
+  const onePassTransaction = await persistent.transaction([
+    { method: "type_text", args: { text: "one-pass-transaction" }, expect: { includes: "one-pass-transaction" } },
+  ], { risk: "reversible" });
+  stateCallDelta = calls.filter(([name]) => name === "get_window_state").length - stateCallsBefore;
+  if (!onePassTransaction.ok || !onePassTransaction.single_pass_screenshot || onePassTransaction.promoted_screenshot
+      || onePassTransaction.metrics.observations !== 1 || onePassTransaction.metrics.screenshot_regions !== 1
+      || stateCallDelta !== 1) {
+    throw new Error("remote transaction refresh used more than one state call");
+  }
+
+  stateCallsBefore = calls.filter(([name]) => name === "get_window_state").length;
+  const onePassBurst = await persistent.keyboardBurst([
+    { method: "type_text", args: { text: "one-pass-burst-a" } },
+    { method: "type_text", args: { text: "one-pass-burst-b" } },
+  ], {
+    risk: "low",
+    stabilityConfirmed: true,
+    confirmationBoundary: false,
+    finalExpect: { includes: "one-pass-burst-b" },
+  });
+  stateCallDelta = calls.filter(([name]) => name === "get_window_state").length - stateCallsBefore;
+  if (!onePassBurst.ok || !onePassBurst.single_pass_screenshot || onePassBurst.promoted_screenshot
+      || onePassBurst.metrics.observations !== 1 || onePassBurst.metrics.screenshot_regions !== 1
+      || stateCallDelta !== 1) {
+    throw new Error("remote keyboard burst terminal refresh used more than one state call");
+  }
+
+  stateCallsBefore = calls.filter(([name]) => name === "get_window_state").length;
+  const onePassWait = await persistent.waitUntil({ includes: "one-pass-burst-b" }, {
+    attempts: 1,
+    intervalMs: 0,
+    maxIntervalMs: 0,
+  });
+  stateCallDelta = calls.filter(([name]) => name === "get_window_state").length - stateCallsBefore;
+  if (!onePassWait.ok || !onePassWait.single_pass_screenshot || onePassWait.promoted_screenshot
+      || (onePassWait.state?.screenshots?.length ?? 0) !== 1 || stateCallDelta !== 1) {
+    throw new Error("remote condition wait terminal observation used more than one state call");
+  }
+
+  let onePassFailure = null;
+  stateCallsBefore = calls.filter(([name]) => name === "get_window_state").length;
+  try {
+    await persistent.act(
+      { method: "type_text", args: { text: "one-pass-failure" } },
+      { expect: { includes: "missing-postcondition" } },
+    );
+  } catch (error) {
+    onePassFailure = error;
+  }
+  stateCallDelta = calls.filter(([name]) => name === "get_window_state").length - stateCallsBefore;
+  if (!onePassFailure?.single_pass_screenshot || !onePassFailure?.diagnostic
+      || stateCallDelta !== 1 || persistent.snapshot().session_status !== "connected") {
+    throw new Error("remote failed postcondition discarded its first-pass screenshot or reobserved");
+  }
+
   persistent.markContentChanged();
   const hintedView = await persistent.observe("routine");
-  if (hintedView.metrics.screenshot_regions !== 1 || persistent.snapshot().pending_visual_refresh) throw new Error("explicit content-change hint missed visual refresh");
+  if (hintedView.metrics.screenshot_regions !== 1 || hintedView.metrics.observations !== 1
+      || persistent.snapshot().pending_visual_refresh) throw new Error("explicit content-change hint missed one-pass visual refresh");
   const fingerprint = persistent.snapshot().target_fingerprint;
   if (fingerprint.app !== "demo" || fingerprint.window_id !== 1 || fingerprint.title_includes !== "Demo" || fingerprint.operation_scope !== "entire-bound-device") {
     throw new Error("target fingerprint is incomplete or missed the full-device operation scope");

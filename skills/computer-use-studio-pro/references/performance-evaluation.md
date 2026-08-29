@@ -24,6 +24,7 @@ Use these levers:
 16. keep the entrypoint, always-load contract, adapter, and selected profile concise; load detailed core workflow, recovery, and benchmark references only when the current branch needs them;
 17. keep full results in the persistent runtime and make `tokenView(result, { maxChars })` the final expression of the same execution cell, avoiding a second tool call and avoiding raw state emission.
 18. for customer handback, prepare the expected return state before pausing; let an approved local event call `signalUserInputComplete` and `resumeAndContinue`, combining debounce, binding check, one compact screenshot-free observation, and eligible continuation without another model turn.
+19. in remote mode, request text plus a runtime-retained screenshot in the first routine/action refresh and emit only compact screenshot labels; avoid the former text-only observation followed by an automatic screenshot recapture.
 
 Do not reduce latency by reusing stale indexes/coordinates, hiding confirmations, or queueing general unverified GUI macros. `runKeyboardBurst` is the only terminal-only input burst: it requires current focus proof, stable single-field scope, a narrow keyboard vocabulary, an explicit confirmation-boundary declaration, and terminal semantic or visual verification.
 
@@ -112,6 +113,14 @@ On 2026-08-28, the default Codex/Windows instruction chain was measured as UTF-8
 - 0.7.1 remote chain: `26,205` bytes, a `45.9%` reduction.
 
 Bytes are an instruction-size proxy rather than provider token billing. Version 0.7.1 replaces the two detailed always-load core files with one compact contract, keeps detailed workflow/recovery files on demand, changes the routine compact-state budget from 1800 to about 900 characters, and adds `tokenView`. The helper keeps raw state inside the persistent kernel while emitting only status, compact redacted evidence, selected metrics, and bounded change/reason text. Its self-test checks that raw `state`, `observation_chars`, full secrets, and excess screenshots do not enter the compact envelope.
+
+## 0.7.6 remote single-pass visual reference
+
+The deterministic regression requires a routine remote observation, an observed semantic change, and an explicit content-change hint to each use exactly one `get_window_state` call. The first two now request text plus a runtime-retained screenshot immediately; an explicit semantic-only call remains one call with zero screenshots. Raw pixels stay outside `tokenView`.
+
+Using the earlier host medians only as a reference calculation, replacing one text-only `3.056 s` call plus one screenshot `3.153 s` call with one screenshot-bearing call removes about `3.056 s`, or `49.2%`, from that affected observation checkpoint. This is not an end-to-end claim; repeat three comparable live remote runs before reporting total-task improvement.
+
+After deduplicating the loaded instructions, the reproducible UTF-8 byte proxy decreases versus 0.7.5: local `23,079 -> 23,004` (`-0.32%`) and remote `32,918 -> 32,843` (`-0.23%`). Runtime screenshot labels remain a small per-view addition; provider billing still requires host counters.
 
 ## 0.7.2 customer-handback reference
 

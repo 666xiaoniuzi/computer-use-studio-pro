@@ -51,7 +51,7 @@ Create one `createRemoteClientSignalAdapter(clientName, { remoteDeviceId })` and
 
 Call `initialObserve()` once. Every input reads the cached gate; live verifiers run on accepted observations/events/reconnect. Wire stop, disconnect, and same-device reconnect to their session methods.
 
-Use `session.observe("routine")` for compact semantic refreshes. Call `markContentChanged()` when an opaque remote canvas changed; use `layout-change`, `failure`, `coordinate`, or `verification` when a screenshot is required. On `STALE_OBSERVATION_LEASE`, refresh the requested surface and remap before input.
+Remote observation/action helpers default to one text+screenshot call; pixels stay in runtime. Pass `include_screenshot:false` (legacy alias accepted) for bounded semantic checks; customer fast return already does. Mark opaque-canvas transitions and remap stale leases.
 
 Before private input, prepare the expected return state and any deterministic reversible continuation. An approved button/hotkey/client bridge signals completion without a model turn; the same event callback runs:
 

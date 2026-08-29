@@ -52,7 +52,7 @@ Treat screenshot IDs, element indexes, coordinates, focus, and crops as expiring
 
 - Keep raw observations and verbose history inside the persistent runtime or task state file. Emit `tokenView(...)`/compact summaries to the model in the same execution cell.
 - Default compact state budget: about 900 characters. Use about 400 for stable polling/window lifecycle and up to 1800 for a new branch, ambiguous state, or recovery.
-- Request text or screenshot, not both, unless the next decision needs both. Start with one complete view; afterwards use an accessibility subtree, delta, or current crop. Promote to a full screenshot on layout change, mismatch, recovery, or final visual proof.
+- Remote routine/action refreshes combine text and a runtime screenshot once; `tokenView` emits labels only. Explicit `include_screenshot:false` keeps bounded semantic/window/handoff checks screenshot-free. Local stays semantic-first.
 - Maintain only: capsule, current hypothesis, last verified result, rollback head, and at most four unresolved/recent events. Compact older successful history on disk.
 - Reuse the target handle and session flags. Use `waitForWindowListState` for pure window appearance/closure and adaptive local polling for loading.
 - Prefer direct setting and semantic verification over click-select-delete-type sequences. Keep user-facing progress and the final report concise unless detail is requested.
