@@ -100,9 +100,15 @@ export async function presentUserHandoffSurface(sky, options = {}) {
     });
     candidateCount = matches.length;
     if (matches.length === 0) throw new Error("No Codex window matched the handoff selector");
-    // list_windows is ordered by the host runtime; the first matching Codex
-    // top-level window is the deterministic fallback when no exact ID is bound.
+    // Bound-window preference: when the session already holds this task's
+    // Codex window id and it is still present, activate that exact window
+    // instead of the first deterministic match (multi-window safety).
+    const preferId = options.preferId == null ? null : String(options.preferId);
     target = matches[0];
+    if (preferId != null) {
+      const preferred = matches.find((candidate) => String(candidate?.id) === preferId);
+      if (preferred) target = preferred;
+    }
   }
   if (target?.id == null) throw new Error("The handoff window requires an id");
 
@@ -121,6 +127,25 @@ export async function presentUserHandoffSurface(sky, options = {}) {
       get_window_state_calls: 0,
     },
   };
+}
+
+/**
+ * Pay the one-time runtime/cold-start cost before the first task decision.
+ * One cheap window enumeration warms the persistent kernel (measured from
+ * roughly 1000 ms cold to under 20 ms warm) and verifies the sky binding;
+ * it performs no state capture and adds no model roundtrip.
+ */
+export async function warmUpRuntime(sky) {
+  const started = Date.now();
+  if (typeof sky?.list_windows !== "function") {
+    return { ok: false, sky_calls: 0, duration_ms: Date.now() - started, reason: "sky.list_windows is unavailable" };
+  }
+  try {
+    await sky.list_windows();
+    return { ok: true, sky_calls: 1, duration_ms: Date.now() - started };
+  } catch (error) {
+    return { ok: false, sky_calls: 1, duration_ms: Date.now() - started, reason: compactText(String(error?.message ?? error), 160) };
+  }
 }
 
 const ASSIGNMENT_SECRET = /(?:\b(password|passwd|secret|token|cookie|authorization|api[_-]?key|otp|one[- ]?time code)\b|(密码|口令|令牌|密钥|验证码))\s*[:=：]\s*(?:"[^"]*"|'[^']*'|[^\s,;，；]+)/gi;
@@ -617,6 +642,25 @@ function expectationResult(state, expect) {
       return { ok: false, reason: `${label} does not exactly match the expected value` };
     }
   }
+  // Control-level verification: bind the expected value to one accessibility
+  // tree line instead of accepting a matching string anywhere in the document.
+  if (expect.elementIndex != null) {
+    const index = Number(expect.elementIndex);
+    const line = String(state?.accessibility?.tree ?? "")
+      .split(/\r?\n/u)
+      .find((item) => new RegExp(`^\\s*${index}\\s+`, "u").test(item));
+    if (!line) return { ok: false, reason: `tree line for element index ${index} is missing` };
+    const content = line.replace(/^\s*\d+\s+/u, "").trim();
+    if (expect.elementValueEquals != null && !equals(content, expect.elementValueEquals)) {
+      return { ok: false, reason: "element value does not exactly match the expected value" };
+    }
+    if (expect.elementValueIncludes != null && !contains(content, expect.elementValueIncludes)) {
+      return { ok: false, reason: "element value is missing the expected text" };
+    }
+    if (expect.elementLabelIncludes != null && !contains(content, expect.elementLabelIncludes)) {
+      return { ok: false, reason: "element control label does not match the expected cue" };
+    }
+  }
   if (expect.minScreenshots != null && (state?.screenshots?.length ?? 0) < expect.minScreenshots) {
     return { ok: false, reason: `expected at least ${expect.minScreenshots} screenshot regions` };
   }
@@ -1023,6 +1067,9 @@ export function createPersistentWindowSession(sky, options = {}) {
     rollback: [...(options.playbookRollback ?? [])].slice(0, 2),
   };
   const attempts = new Map();
+  // In-memory local latency/profile accounting: zero extra Computer Use calls,
+  // zero model roundtrips. Fed by the session operations below.
+  const profile = { observations: 0, observation_ms: 0, actions: 0, action_ms: 0, verification_failures: 0, unknown_outcomes: 0, recoveries: 0 };
 
   function queueCheckpoint(event) {
     if (!checkpointStore) return;
@@ -1389,6 +1436,7 @@ export function createPersistentWindowSession(sky, options = {}) {
       ...presentOptions,
       surface: selected,
       window: explicitWindow,
+      preferId: selected === "codex" && explicitWindow == null ? hostCodexWindow?.id : null,
     });
     if (selected === "codex") hostCodexWindow = presentation.window;
     return presentation;
@@ -1473,6 +1521,8 @@ export function createPersistentWindowSession(sky, options = {}) {
       await matchVerifiedPlaybook(result.state);
       result.metrics.sky_calls += startupSkyCalls;
       result.metrics.duration_ms = Date.now() - initialStarted;
+      profile.observations += 1;
+      profile.observation_ms += Math.round(result.metrics.duration_ms ?? 0);
       return withSessionMeta(result, changes, { reused: false, playbook_match: playbookMatch });
     } catch (error) {
       handleRuntimeError(error, "initial-observation");
@@ -1496,6 +1546,8 @@ export function createPersistentWindowSession(sky, options = {}) {
       });
       const changes = acceptState(result.state);
       if ((result.state?.screenshots?.length ?? 0) > 0) pendingVisualRefresh = false;
+      profile.observations += 1;
+      profile.observation_ms += Math.round(result.metrics?.duration_ms ?? 0);
       return withSessionMeta(result, changes, {
         reason,
         promoted_screenshot: false,
@@ -1524,6 +1576,7 @@ export function createPersistentWindowSession(sky, options = {}) {
         throw error;
       }
     }
+    const actionStarted = Date.now();
     try {
       successVerified = false;
       successEpoch = null;
@@ -1535,6 +1588,8 @@ export function createPersistentWindowSession(sky, options = {}) {
         include_screenshot: includeScreenshot,
       });
       const changes = acceptState(nextState);
+      profile.actions += 1;
+      profile.action_ms += Date.now() - actionStarted;
       const verified = refresh.expect != null;
       if (verified) {
         rememberVerifiedCheckpoint("action", state);
@@ -1554,6 +1609,10 @@ export function createPersistentWindowSession(sky, options = {}) {
       });
     } catch (error) {
       const outcomeUnknown = error?.outcome !== "failed";
+      profile.actions += 1;
+      profile.action_ms += Date.now() - actionStarted;
+      if (error?.outcome === "failed") profile.verification_failures += 1;
+      else profile.unknown_outcomes += 1;
       handleRuntimeError(error, "action-or-refresh");
       try {
         if (error?.state?.window && (error.state.screenshots?.length ?? 0) > 0) {
@@ -1565,6 +1624,7 @@ export function createPersistentWindowSession(sky, options = {}) {
           error.layout_changed = changes.layoutChanged;
           error.semantic_changed = changes.semanticChanged;
         } else {
+          profile.recoveries += 1;
           const diagnostic = await observe("failure", { needles: refresh.needles });
           error.diagnostic = diagnostic.summary;
           error.layout_epoch = diagnostic.layout_epoch;
@@ -1606,9 +1666,15 @@ export function createPersistentWindowSession(sky, options = {}) {
       },
     });
     const changes = result.state?.window ? acceptState(result.state) : {};
+    profile.actions += Number(result.metrics?.actions ?? 0);
+    if (!result.ok) {
+      if (result.outcome === "failed") profile.verification_failures += 1;
+      else profile.unknown_outcomes += 1;
+    }
     let visual = null;
     if (!result.ok && (result.state?.screenshots?.length ?? 0) === 0
         && transactionOptions.promoteFailureScreenshot !== false) {
+      profile.recoveries += 1;
       visual = await observe("failure", { needles: transactionOptions.needles });
       result.diagnostic = visual.summary;
     }
@@ -1676,6 +1742,11 @@ export function createPersistentWindowSession(sky, options = {}) {
       },
     });
     const changes = result.state?.window ? acceptState(result.state) : {};
+    profile.actions += Number(result.metrics?.actions ?? 0);
+    if (!result.ok) {
+      if (result.outcome === "failed") profile.verification_failures += 1;
+      else profile.unknown_outcomes += 1;
+    }
     if (!result.ok && result.outcome === "unknown" && mode === "remote-fast-fix" && !stopLatched && authorizationStatus === "active") {
       transition("stalled", "keyboard-burst-outcome-unknown");
     }
@@ -2108,6 +2179,7 @@ export function createPersistentWindowSession(sky, options = {}) {
       });
       initialized = true;
       pendingVisualRefresh = false;
+      profile.recoveries += 1;
       return withSessionMeta(result, changes, {
         rebind_reason: recoveryOptions.reason ?? "reconnected",
         resumed_from_checkpoint: lastVerifiedCheckpoint,
@@ -2134,6 +2206,7 @@ export function createPersistentWindowSession(sky, options = {}) {
     lastContentSignature = null;
     pendingVisualRefresh = true;
     const result = await initialObserve(observeOptions);
+    profile.recoveries += 1;
     return { ...result, rebind_reason: reason };
   }
 
@@ -2193,6 +2266,7 @@ export function createPersistentWindowSession(sky, options = {}) {
     const check = expectationResult(observation.state, success);
     successVerified = check.ok;
     successEpoch = check.ok ? { layout: layoutEpoch, semantic: semanticEpoch } : null;
+    if (!check.ok) profile.verification_failures += 1;
     if (check.ok) {
       rememberVerifiedCheckpoint("terminal-success", observation.state);
       await promoteVerifiedPlaybook();
@@ -2235,6 +2309,7 @@ export function createPersistentWindowSession(sky, options = {}) {
       checkpoint_writes: checkpointWrites,
       checkpoint_error: checkpointError,
       restored_from_checkpoint: Boolean(options.resumeCheckpoint),
+      profile: { ...profile },
       summary: state ? compactState(state, summaryOptions) : null,
     };
   }
@@ -2283,6 +2358,7 @@ export function createPersistentWindowSession(sky, options = {}) {
     observationAgeMs,
     flushCheckpoint,
     clearCheckpoint,
+    profileStats: () => ({ ...profile }),
     snapshot,
   });
 }
@@ -2903,7 +2979,9 @@ export async function fillEditable(sky, observation, options) {
     return runVerifiedTransaction(sky, observation, [{
       method: "set_value",
       args: { element_index: options.element_index, value },
-      expect: options.expect ?? { includes: value },
+      // Default verification is control-scoped: the value must appear on this
+      // element's own accessibility tree line, not merely somewhere on screen.
+      expect: options.expect ?? { elementIndex: options.element_index, elementValueIncludes: value },
     }], { ...options, transactionClass: options.transactionClass ?? "local-reversible" });
   }
   return runVerifiedTransaction(sky, observation, [
@@ -3116,10 +3194,20 @@ export async function selfTest() {
   };
   const codexPresentation = await presentUserHandoffSurface(presentationSky, { surface: "codex" });
   const remotePresentation = await presentUserHandoffSurface(presentationSky, { surface: "remote-client", window });
+  const secondCodexWindow = { id: 3, app: "Codex", title: "another-task - Codex" };
+  const multiPresentationSky = {
+    async list_windows() { return [codexWindow, secondCodexWindow]; },
+    async activate_window({ window: target }) { presentationCalls.push(`prefer:${target.id}`); },
+  };
+  const preferredCodex = await presentUserHandoffSurface(multiPresentationSky, { surface: "codex", preferId: secondCodexWindow.id });
+  let warmupCalls = 0;
+  const warmed = await warmUpRuntime({ async list_windows() { warmupCalls += 1; return [window]; } });
   if (codexPresentation.presented_window.id !== codexWindow.id
       || codexPresentation.metrics.sky_calls !== 2 || codexPresentation.metrics.get_window_state_calls !== 0
       || remotePresentation.metrics.sky_calls !== 1
-      || presentationCalls.join(",") !== "list_windows,activate:2,activate:1") {
+      || presentationCalls.join(",") !== "list_windows,activate:2,activate:1,prefer:3"
+      || preferredCodex.presented_window.id !== 3
+      || !warmed.ok || warmed.sky_calls !== 1 || warmupCalls !== 1) {
     throw new Error("foreground handoff presentation self-test failed");
   }
   const capsKeys = remoteCanvasTextActions("Aa", { capsLock: true }).map((action) => action.args.key);
@@ -3139,6 +3227,58 @@ export async function selfTest() {
       || expectationResult(exactCaseState, { documentEquals: "openai" }).ok
       || !expectationResult(exactCaseState, { documentEquals: "openai", caseSensitive: false }).ok) {
     throw new Error("case-sensitive expectation or zero-call remote text routing self-test failed");
+  }
+  const elementState = {
+    window,
+    accessibility: { document_text: "hello world", tree: "13 Edit hello world\n21 Button Save" },
+    screenshots: [],
+  };
+  if (!expectationResult(elementState, { elementIndex: 13, elementValueIncludes: "hello" }).ok
+      || expectationResult(elementState, { elementIndex: 13, elementValueIncludes: "missing" }).ok
+      || !expectationResult(elementState, { elementIndex: 13, elementValueEquals: "Edit hello world" }).ok
+      || expectationResult(elementState, { elementIndex: 21, elementValueIncludes: "hello" }).ok
+      || expectationResult(elementState, { elementIndex: 99, elementValueIncludes: "hello" }).ok
+      || expectationResult(elementState, { elementIndex: 13, elementLabelIncludes: "Button" }).ok) {
+    throw new Error("control-level element verification self-test failed");
+  }
+  let directValue = "";
+  const directSky = {
+    async set_value(input) { directValue = input.value; calls.push(["set_value", input]); },
+    async get_window_state(input) {
+      calls.push(["direct_get_window_state", input]);
+      return {
+        window,
+        accessibility: { focused_element: "13 Edit", document_text: directValue, tree: `13 Edit ${directValue}` },
+        screenshots: [],
+      };
+    },
+  };
+  const directObservation = { window, accessibility: { tree: "13 Edit", focused_element: "13 Edit" }, screenshots: [] };
+  const directScoped = await fillEditable(directSky, directObservation, {
+    element_index: 13,
+    value: "scoped-value",
+    strategy: "direct",
+    risk: "reversible",
+    screenshotOnSemanticChange: false,
+  });
+  const directWrongSky = {
+    ...directSky,
+    async get_window_state(input) {
+      calls.push(["direct_wrong_get_window_state", input]);
+      return { window, accessibility: { focused_element: "13 Edit", document_text: directValue, tree: "13 Edit" }, screenshots: [] };
+    },
+  };
+  const directWrong = await fillEditable(directWrongSky, directObservation, {
+    element_index: 13,
+    value: "scoped-value",
+    strategy: "direct",
+    risk: "reversible",
+    screenshotOnSemanticChange: false,
+  });
+  if (!directScoped.ok || directScoped.failed_step != null
+      || !String(directScoped.state?.accessibility?.tree).includes("scoped-value")
+      || directWrong.ok || directWrong.failed_step !== 0) {
+    throw new Error("direct fill default control-scoped verification self-test failed");
   }
   const observation = { window, accessibility: { tree: "13 Edit", focused_element: "13 Edit" }, screenshots: [] };
   const toDeskSignals = createRemoteClientSignalAdapter("ToDesk", { remoteDeviceId });
@@ -4130,6 +4270,12 @@ export async function selfTest() {
       || adaptiveText.transport_selection.alternative_sky_calls <= adaptiveText.metrics.sky_calls
       || adaptiveKeys.join(",") !== "Control_L+v") {
     throw new Error("adaptive lower-call remote text transport self-test failed");
+  }
+  const profileNow = persistent.profileStats();
+  if (profileNow.observations < 5 || profileNow.actions < 4 || profileNow.recoveries < 2
+      || profileNow.verification_failures < 1
+      || persistent.snapshot().profile?.observations !== profileNow.observations) {
+    throw new Error("session profile statistics self-test failed");
   }
   return "self-test: ok";
 }

@@ -1,5 +1,15 @@
 # 更新记录
 
+## 0.9.0 - 2026-09-01
+
+- 新增**可见客户端终端桥**（`createVisibleClientTerminalBridge`）：把 1-20 项探针的编码命令粘贴到远端 PowerShell 窗口、回车执行、复制标记输出并解析，一次桥调用完成整批证据，零状态采集、零模型往返；遵循已验证剪贴板读写恢复契约，运行后恢复原剪贴板。
+- 新增**等待类探针** `wait-file` / `wait-process` / `wait-service` / `wait-port`（批内超时与间隔，默认 30s/500ms）与 `keyboard` 状态探针（CapsLock/NumLock/布局）。下载、安装、服务就绪等等待下沉到单次终端调用，替代 GUI 轮询；超时探针返回 `timed_out_ids` 供本地决策。
+- 证据路由公平性修正：多探针批量请求按探针数缩放状态采集基线，单批不再被单次采集假基线排除；`wait-*` / `keyboard` 类请求不会回落到截图或状态采集路线。
+- 新增**控件级验证**：`expectationResult` 支持 `elementIndex` + `elementValueEquals` / `elementValueIncludes` / `elementLabelIncludes` 树行级断言；`fillEditable` 直接写入策略默认绑定到元素自身值，消除"文本出现但落错控件"的假阳性。
+- 新增 **Codex 窗口偏好绑定**：会话已绑定的 Codex 窗口句柄在枚举候选中优先激活，多窗口不再落到首个匹配；`warmUpRuntime` 在任务首个决策前支付一次冷启动税。
+- 新增**会话级本地统计**：观察/动作次数与耗时、验证失败、未知结果、恢复次数全部纯内存累计，零额外调用，随 `snapshot().profile` 与 `profileStats()` 导出。
+- 激活与授权方式保持不变：协议同意 → 机器码 v2 → 签名授权（Ed25519 + 设备绑定 + 有效期 + 技能版本范围 + 离线吊销），导入时门控，运行时内存缓存断言；仅版本号升至 0.9.0（默认授权 `minSkillVersion=0.8.0` 无上限，已发标准授权继续有效）。
+
 ## 0.8.0 - 2026-08-31
 
 - 消除两类重复状态采集：持久会话可复用用于选窗的当前完整观察；`verifySuccess()` 可复用仍新鲜、已满足终态且包含所需截图的动作刷新结果。两者各自可省一次 `get_window_state`，需要外部刷新时可显式关闭复用。

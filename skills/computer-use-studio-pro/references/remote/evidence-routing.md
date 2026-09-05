@@ -47,17 +47,42 @@ Keep allowlists, schema validation, task/target binding, rollback, confirmation,
 
 ## One-batch Windows terminal evidence
 
-`buildWindowsRemoteEvidenceBatch(...)` supports 1-20 read-only probes: `file`, `process`, `service`, `port`, `inner-window`, `registry`, `app-version`, `system`, and `dns`. It emits one UTF-16LE encoded PowerShell command with marker-delimited compact JSON. `runWindowsRemoteEvidenceBatch(...)` executes one verified bridge call and parses only the marked payload.
+`buildWindowsRemoteEvidenceBatch(...)` supports 1-20 read-only probes: `file`, `process`, `service`, `port`, `inner-window`, `registry`, `app-version`, `system`, `dns`, the bounded wait probes `wait-file` / `wait-process` / `wait-service` / `wait-port` (`timeoutMs` up to 300000, `intervalMs` 50-10000, optional `present: false` to invert), and `keyboard` (CapsLock/NumLock/layout of the machine that runs the batch). It emits one UTF-16LE encoded PowerShell command with marker-delimited compact JSON. `runWindowsRemoteEvidenceBatch(...)` executes one verified bridge call and parses only the marked payload; an expired wait probe reports its id in `timed_out_ids` so the caller can decide "not yet" without a GUI capture or model roundtrip.
 
 ```js
 const result = await runWindowsRemoteEvidenceBatch(verifiedTerminalBridge, [
   { id: "app", kind: "file", path: "C:\\Program Files\\APP\\APP.exe" },
   { id: "proc", kind: "process", name: "APP" },
   { id: "port", kind: "port", port: 8080 },
+  { id: "ready", kind: "wait-file", path: "C:\\APP\\ready.txt", timeoutMs: 60000, intervalMs: 500 },
 ]);
 ```
 
-A visible-client bridge may paste the encoded command, execute it, select/copy the marked result through verified bidirectional clipboard sync, and return `stdout` plus actual `sky_calls`/`state_captures`. Keep this whole operation inside one runtime call and one terminal batch. Full output stays in runtime; emit only the compact verification result.
+## Visible-client terminal bridge
+
+`createVisibleClientTerminalBridge(sky, options)` is the real execution channel for a visible client: it writes the encoded command through a verified clipboard bridge, pastes it with `Control_L+v` into the focused terminal, presses `Return`, then repeatedly selects/copies the buffer (`Control_L+a` / `Control_L+c`) until the output markers appear (bounded copy attempts), parses the JSON, and restores the pre-run clipboard. The whole batch is one bridge call with zero state captures; the caller supplies the focused terminal window (optionally a `focusPoint` from the current screenshot) and must confirm the select/copy/paste keys work in that terminal (Windows Terminal supports Ctrl+A/Ctrl+C/Ctrl+V).
+
+```js
+const bridge = createVisibleClientTerminalBridge(sky, {
+  window,
+  clipboard,          // verified read/write/restore bridge (same contract as remoteUnicodeText)
+  verified: true,     // after the operator confirms terminal paste/copy works
+  focusPoint,         // optional: { x, y, screenshotId } from the current full screenshot
+  estimatedMs: 4000,
+});
+const router = createRemoteEvidenceRouter({ sky, baselineStateCaptureMs: 3100, terminalBridge: bridge });
+const evidence = await router.collect({
+  kind: "batch",
+  probes: [
+    { id: "installed", kind: "file", path: "C:\\Program Files\\APP\\APP.exe" },
+    { id: "service", kind: "service", name: "APP" },
+    { id: "ready", kind: "wait-port", port: 8080, timeoutMs: 45000, intervalMs: 500 },
+  ],
+  verify: (result) => result.verified === true,
+});
+```
+
+A multi-probe request scales the state-capture baseline by the probe count, so one batch compares against the captures it actually replaces. `wait-*`/`keyboard` requests never fall back to a state/screenshot route because only the executor can answer them; when no terminal bridge exists, `router.inspect(...)` reports no eligible route and the caller uses the ordinary observation path (or passes an explicit `maxEstimatedMs` when a single probe still beats the baseline).
 
 ## Accuracy
 

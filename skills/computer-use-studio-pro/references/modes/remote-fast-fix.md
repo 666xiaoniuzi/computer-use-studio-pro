@@ -82,7 +82,8 @@ Read [rapid-playbook.md](../remote/rapid-playbook.md) only for the active diagno
 - Before typing, activate and focus the bound target. `session.remoteText(...)` uses verified clipboard for ASCII only when its declared `estimatedSkyCalls` is lower; an unknown cost keeps key events. Unicode/layout needs use clipboard. Exact checks are case-sensitive, known Caps Lock changes only key mapping, and selection adds zero calls.
 - Device IDs remain in the control-plane fingerprint only. Application searches, addresses, settings, and documents receive task payloads only.
 - Rebind after window/display/DPI/zoom/remote-resolution changes. On `STALE_OBSERVATION_LEASE`, refresh and remap; do not replay the expired action object.
-- Use `waitUntil` for bounded adaptive polling. Mark an opaque video canvas changed after a known transition.
+- Use `waitUntil` for bounded adaptive polling only when no terminal bridge exists. When the device exposes a PowerShell/Windows terminal, prefer the single-batch bridge with `wait-file`/`wait-process`/`wait-service`/`wait-port` probes (bounded in-batch timeout, `timed_out_ids` on expiry), so download/install/ready waits are one bridge call instead of repeated GUI reads; mark an opaque video canvas changed after a known transition.
+- Prefer control-scoped verification when the accessibility tree exposes element values: postconditions may bind `elementIndex` with `elementValueEquals`/`elementValueIncludes`/`elementLabelIncludes`, and `fillEditable(..., { strategy: "direct" })` verifies the element's own tree line by default.
 - If the customer moves the mouse or types outside a deliberate handoff, refresh and incorporate the new state.
 
 ## Risk checkpoints

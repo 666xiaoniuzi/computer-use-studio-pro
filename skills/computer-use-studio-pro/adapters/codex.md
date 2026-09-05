@@ -20,10 +20,15 @@ if (!globalThis.cusproFastPath) {
 if (!globalThis.cusproCapabilities) {
   globalThis.cusproCapabilities = globalThis.cusproFastPath.inspectSkyCapabilities(globalThis.sky);
 }
+if (!globalThis.cusproWarm) {
+  globalThis.cusproWarm = await globalThis.cusproFastPath.warmUpRuntime(globalThis.sky);
+}
 if (!globalThis.cusproUsage) {
   globalThis.cusproUsage = globalThis.cusproFastPath.createTaskUsageMeter();
 }
 ```
+
+`warmUpRuntime` pays the cold-start tax once with a single cheap `list_windows` (measured from roughly `1004.98 ms` cold to `14.83 ms` warm), before the first task decision; it performs no state capture, adds no model roundtrip, and a failure is non-blocking.
 
 Use the actual Skill root when installation differs. Reuse these globals for the whole task. Capability negotiation is synchronous and adds no Computer Use call. When a task is classified as `remote-fast-fix`, call `globalThis.cusproUsage.startTask()` exactly once as soon as its compact task contract is accepted and before the first remote observation or input; this resets prior counters and establishes the wall-clock start.
 
@@ -46,6 +51,7 @@ Prefer the matching helper, persistent session, signal adapter, and `tokenView`;
 
 - Treat an explicit task as continuous authorization for ordinary low-risk reversible local input. Keep host action-time confirmation boundaries for consequential actions.
 - Start with compact accessibility. Use lifecycle enumeration for pure window appearance/closure, explicit expectations for actions, and verified transactions only for up to three deterministic reversible steps.
+- `fillEditable(..., { strategy: "direct" })` defaults to control-scoped verification: the value must appear on that element's own accessibility tree line (`elementIndex` + `elementValueIncludes`), not merely anywhere in the document. Pass an explicit `expect` when a document-level check is intended.
 - `runKeyboardBurst` is limited to two or three inputs in one verified stable field: single-line literal typing, Select All, Backspace, or Delete. Require its stability, authorization, boundary, and terminal-verification declarations; use the per-action path otherwise.
 
 ## Remote execution
@@ -57,6 +63,8 @@ Create one `createRemoteClientSignalAdapter(clientName, { remoteDeviceId })` and
 Call `initialObserve()` once. In remote mode it foregrounds the bound ToDesk/Sunlogin-equivalent window before the first observation, so the host user does not need to expose the remote-client window manually. Every input reads the cached gate; live verifiers run on accepted observations/events/reconnect. Wire stop, disconnect, and same-device reconnect to their session methods.
 
 Remote work takes one complete initial screenshot; pixels stay in runtime. The dominant delay is the state-capture call. Remove redundant calls: use `list_windows` for lifecycle, screenshot-free compact state for bounded semantic checks, and `session.remoteCanvasText(...)` for stable opaque-canvas ASCII input. That helper uses cached session gates, key-event forwarding, and exactly one terminal screenshot; it never uses the device ID as task text. Mark opaque-canvas transitions and remap stale leases.
+
+When the target device exposes a PowerShell/Windows terminal, import `remote_evidence.mjs` and create the real execution bridge with `createVisibleClientTerminalBridge(sky, { window, clipboard, verified: true, focusPoint })`, then pass it as `terminalBridge` to `createRemoteEvidenceRouter`. One bridge call pastes the encoded 1-20 probe batch, presses Enter, copies the marker-delimited output, parses it into results, and restores the prior clipboard — zero state captures and zero model roundtrips. Use `wait-file`/`wait-process`/`wait-service`/`wait-port` probes (bounded timeout inside the batch, `timed_out_ids` on expiry) and the `keyboard` probe (CapsLock/NumLock/layout) instead of GUI polling for download/install/ready waits. The caller exposes and keeps the terminal window/pane focused and must confirm that Ctrl+A/Ctrl+C/Ctrl+V work in that terminal.
 
 ```js
 globalThis.last = await session.remoteCanvasText("https://example.invalid", {

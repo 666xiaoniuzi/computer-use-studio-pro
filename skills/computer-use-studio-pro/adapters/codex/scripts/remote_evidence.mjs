@@ -20,6 +20,7 @@ const ROUTE_PRIORITY = Object.freeze({
 
 const TERMINAL_KINDS = new Set([
   "file", "process", "service", "port", "inner-window", "registry", "app-version", "system", "dns",
+  "wait-file", "wait-process", "wait-service", "wait-port", "keyboard",
 ]);
 
 const REQUEST_KINDS = new Set([
@@ -62,15 +63,16 @@ export function classifyRemoteEvidenceRoute(capabilities = {}, rawRequest = {}) 
   };
 
   const requiresVisual = request.requireScreenshot === true || request.kind === "visual";
+  const terminalOnly = request.kind.startsWith("wait-") || request.kind === "keyboard";
   const currentStateEligible = request.state && typeof request.verify === "function"
     && (!requiresVisual || (request.state.screenshots?.length ?? 0) > 0);
   add("current-state", Boolean(currentStateEligible), 0, { state_captures: 0 });
   add("structured-executor", !requiresVisual && Boolean(capabilities.structuredExecutor), capabilities.structuredExecutorMs ?? 50, { state_captures: 0 });
   add("terminal-batch", !requiresVisual && Boolean(capabilities.terminalBatch), capabilities.terminalBatchMs ?? 650, { state_captures: capabilities.terminalStateCaptures ?? 0 });
-  add("outer-window-list", !requiresVisual && request.kind === "outer-window" && Boolean(capabilities.windowList), capabilities.windowListMs ?? 20, { state_captures: 0 });
-  add("accessibility", !requiresVisual && Boolean(request.state?.accessibility && typeof request.verify === "function"), 0, { state_captures: 0 });
-  add("state-capture", !requiresVisual && Boolean(capabilities.stateCapture), capabilities.stateCaptureMs ?? baselineMs, { state_captures: 1 });
-  add("visual-capture", Boolean(capabilities.visualCapture), capabilities.visualCaptureMs ?? baselineMs, { state_captures: 1 });
+  add("outer-window-list", !requiresVisual && !terminalOnly && request.kind === "outer-window" && Boolean(capabilities.windowList), capabilities.windowListMs ?? 20, { state_captures: 0 });
+  add("accessibility", !requiresVisual && !terminalOnly && Boolean(request.state?.accessibility && typeof request.verify === "function"), 0, { state_captures: 0 });
+  add("state-capture", !requiresVisual && !terminalOnly && Boolean(capabilities.stateCapture), capabilities.stateCaptureMs ?? baselineMs, { state_captures: 1 });
+  add("visual-capture", !terminalOnly && Boolean(capabilities.visualCapture), capabilities.visualCaptureMs ?? baselineMs, { state_captures: 1 });
 
   candidates.sort((a, b) => a.estimated_ms - b.estimated_ms || ROUTE_PRIORITY[a.route] - ROUTE_PRIORITY[b.route]);
   return Object.freeze({
@@ -142,6 +144,13 @@ export function createRemoteEvidenceRouter(options = {}) {
 
   function inspect(rawRequest) {
     const request = normalizeRequest(rawRequest);
+    // A 1-20 probe batch replaces up to that many separate state captures, so
+    // the baseline and capture estimates must scale with the probe count;
+    // otherwise a single multi-probe batch is wrongly excluded by the ceiling.
+    const probeCount = Array.isArray(request.probes) && request.probes.length > 0
+      ? Math.min(20, request.probes.length)
+      : 1;
+    const batchScale = probeCount > 1 ? probeCount : 1;
     const scoped = {
       ...capabilities,
       structuredExecutor: supportedBy(structuredExecutor, request.kind),
@@ -154,9 +163,12 @@ export function createRemoteEvidenceRouter(options = {}) {
     };
     const stateEstimate = estimate(request.kind, "state-capture", baselineStateCaptureMs);
     const visualEstimate = estimate(request.kind, "visual-capture", baselineStateCaptureMs);
-    scoped.stateCaptureMs = stateEstimate;
-    scoped.visualCaptureMs = visualEstimate;
-    return classifyRemoteEvidenceRoute(scoped, request);
+    scoped.stateCaptureMs = stateEstimate * batchScale;
+    scoped.visualCaptureMs = visualEstimate * batchScale;
+    return classifyRemoteEvidenceRoute(scoped, {
+      ...request,
+      baselineStateCaptureMs: request.baselineStateCaptureMs ?? (baselineStateCaptureMs * batchScale),
+    });
   }
 
   async function collect(rawRequest) {
@@ -248,6 +260,29 @@ function psQuote(value) {
   return `'${String(value ?? "").replace(/'/gu, "''")}'`;
 }
 
+function waitCondition(probe) {
+  const present = probe.present !== false;
+  let expression;
+  switch (probe.kind) {
+    case "wait-file":
+      expression = `(Test-Path -LiteralPath ${psQuote(probe.path)})`;
+      break;
+    case "wait-process":
+      expression = `@(Get-Process -Name ${psQuote(probe.name)} -ErrorAction SilentlyContinue).Count -gt 0`;
+      break;
+    case "wait-service":
+      expression = `(Get-Service -Name ${psQuote(probe.name)} -ErrorAction SilentlyContinue).Status -eq 'Running'`;
+      break;
+    case "wait-port":
+      expression = `@(Get-NetTCPConnection -LocalPort ${Number(probe.port)} -ErrorAction SilentlyContinue).Count -gt 0`;
+      break;
+    default:
+      throw new Error(`Unsupported wait probe kind: ${probe.kind}`);
+  }
+  // present:false waits for the inverse (file gone, process stopped, port closed).
+  return present ? `(${expression})` : `(-not ${expression})`;
+}
+
 function probeStatement(probe) {
   const id = psQuote(probe.id);
   const kind = psQuote(probe.kind);
@@ -283,6 +318,22 @@ function probeStatement(probe) {
     case "dns":
       body = push(`@(Resolve-DnsName -Name ${psQuote(probe.host)} -ErrorAction Stop|Select-Object -First 20 Name,Type,IPAddress,NameHost)`);
       break;
+    case "wait-file":
+    case "wait-process":
+    case "wait-service":
+    case "wait-port": {
+      // Block inside the single terminal invocation until the condition is met
+      // or the timeout expires: one bridge call replaces repeated GUI polling.
+      const timeoutMs = Number(probe.timeoutMs ?? 30_000);
+      const intervalMs = Number(probe.intervalMs ?? 500);
+      const condition = waitCondition(probe);
+      const loop = `$sw=[Diagnostics.Stopwatch]::StartNew();$ok=$false;while($sw.Elapsed.TotalMilliseconds -lt ${timeoutMs}){if(${condition}){$ok=$true;break};Start-Sleep -Milliseconds ${intervalMs}}`;
+      body = `${loop};$r+=[pscustomobject]@{id=${id};kind=${kind};ok=$ok;value=[pscustomobject]@{elapsedMs=[int]$sw.Elapsed.TotalMilliseconds};error=$(if($ok){$null}else{'timeout'})}`;
+      break;
+    }
+    case "keyboard":
+      body = `$kv=[pscustomobject]@{capsLock=[Console]::CapsLock;numberLock=[Console]::NumberLock;layout=$null};try{$kv.layout=(Get-WinUserLanguageList -ErrorAction SilentlyContinue|Select-Object -First 1 -ExpandProperty LanguageTag)}catch{};${push("$kv")}`;
+      break;
     default:
       throw new Error(`Unsupported Windows terminal probe: ${probe.kind}`);
   }
@@ -298,13 +349,25 @@ function normalizeProbes(probes) {
     const probe = { ...raw, kind: String(raw?.kind ?? "").trim().toLowerCase(), id: String(raw?.id ?? `probe-${index + 1}`) };
     if (!TERMINAL_KINDS.has(probe.kind)) throw new Error(`Unsupported remote terminal probe kind: ${probe.kind}`);
     if (!/^[A-Za-z0-9._-]{1,64}$/u.test(probe.id) || ids.has(probe.id)) throw new Error(`Invalid or duplicate probe id: ${probe.id}`);
-    if (probe.kind === "port" && (!Number.isInteger(Number(probe.port)) || Number(probe.port) < 1 || Number(probe.port) > 65535)) {
+    if (["port", "wait-port"].includes(probe.kind) && (!Number.isInteger(Number(probe.port)) || Number(probe.port) < 1 || Number(probe.port) > 65535)) {
       throw new Error(`Invalid port for probe ${probe.id}`);
     }
-    for (const field of probe.kind === "file" || probe.kind === "app-version" ? ["path"]
-      : probe.kind === "process" || probe.kind === "service" ? ["name"]
+    if (probe.kind.startsWith("wait-")) {
+      const timeoutMs = Number(probe.timeoutMs ?? 30_000);
+      const intervalMs = Number(probe.intervalMs ?? 500);
+      if (!Number.isInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 300_000) {
+        throw new Error(`Invalid wait timeoutMs for probe ${probe.id}`);
+      }
+      if (!Number.isInteger(intervalMs) || intervalMs < 50 || intervalMs > 10_000) {
+        throw new Error(`Invalid wait intervalMs for probe ${probe.id}`);
+      }
+    }
+    for (const field of ["file", "wait-file", "app-version"].includes(probe.kind) ? ["path"]
+      : ["process", "service", "wait-process", "wait-service"].includes(probe.kind) ? ["name"]
         : probe.kind === "registry" ? ["path", "name"]
-          : probe.kind === "dns" ? ["host"] : []) {
+          : probe.kind === "dns" ? ["host"]
+            : ["port", "wait-port"].includes(probe.kind) ? (Number.isInteger(Number(probe.port)) && Number(probe.port) >= 1 && Number(probe.port) <= 65535 ? [] : ["port"])
+              : []) {
       if (!String(probe[field] ?? "").trim()) throw new Error(`Probe ${probe.id} requires ${field}`);
     }
     ids.add(probe.id);
@@ -364,6 +427,9 @@ export async function runWindowsRemoteEvidenceBatch(bridge, probes, options = {}
     complete,
     results,
     failed_ids: results.filter((result) => result?.ok !== true).map((result) => result?.id),
+    // A wait probe that expired still reports its timed-out id so the caller
+    // can decide "not yet" without a GUI capture or a model roundtrip.
+    timed_out_ids: results.filter((result) => result?.error === "timeout").map((result) => result?.id),
     metrics: {
       sky_calls: Number(raw?.metrics?.sky_calls ?? 0),
       state_captures: Number(raw?.metrics?.state_captures ?? 0),
@@ -374,6 +440,126 @@ export async function runWindowsRemoteEvidenceBatch(bridge, probes, options = {}
       duration_ms: Date.now() - started,
     },
   };
+}
+
+/**
+ * Real remote execution bridge over the visible client: paste one encoded
+ * PowerShell batch into the remote machine's terminal window, run it, copy the
+ * marker-delimited output back through the verified clipboard, and parse it.
+ * The whole batch is one bridge call with zero state captures; only the decoded
+ * results and compact metrics leave this function in the runtime envelope.
+ *
+ * The caller remains responsible for exposing a PowerShell (or equivalent)
+ * terminal window on the target device, keeping the window/pane focused, and
+ * confirming that the configured select/copy/paste keys work in that terminal
+ * (Windows Terminal: Ctrl+A selects all, Ctrl+C copies, Ctrl+V pastes).
+ */
+export function createVisibleClientTerminalBridge(sky, options = {}) {
+  assertLicensed();
+  if (!sky || typeof sky.press_key !== "function") {
+    throw new Error("Visible-client terminal bridge requires sky.press_key");
+  }
+  const clipboard = options.clipboard;
+  if (!clipboard || typeof clipboard.write !== "function" || typeof clipboard.read !== "function") {
+    throw new Error("Visible-client terminal bridge requires verified clipboard read and write");
+  }
+  const window = options.window ?? null;
+  if (!window || window.id == null) throw new Error("Visible-client terminal bridge requires a bound target window");
+  const focusPoint = options.focusPoint ?? null;
+  const pasteKey = options.pasteKey ?? "Control_L+v";
+  const enterKey = options.enterKey ?? "Return";
+  const selectAllKey = options.selectAllKey ?? "Control_L+a";
+  const copyKey = options.copyKey ?? "Control_L+c";
+  const waitAttempts = Math.max(1, Number(options.waitAttempts ?? 4));
+  const waitIntervalMs = Math.max(0, Number(options.waitIntervalMs ?? 1500));
+
+  async function execute(plan) {
+    if (!plan || typeof plan.command !== "string") {
+      throw new Error("Visible-client terminal bridge requires a prepared command plan");
+    }
+    const started = Date.now();
+    let skyCalls = 0;
+    let clipboardCalls = 0;
+    let priorClipboard = null;
+    let rawOutput = "";
+    const probeIds = new Set((plan.probes ?? []).map((probe) => String(probe.id ?? "")));
+    const press = async (key) => { await sky.press_key({ window, key }); skyCalls += 1; };
+    try {
+      if (typeof clipboard.read === "function") priorClipboard = await clipboard.read();
+      if (focusPoint) {
+        if (typeof sky.click !== "function") throw new Error("focusPoint requires sky.click");
+        await sky.click({ window, ...focusPoint });
+        skyCalls += 1;
+      }
+      if (options.beforePaste) await options.beforePaste();
+      const writeResult = await clipboard.write(plan.command, { window });
+      clipboardCalls += 1;
+      skyCalls += Number(writeResult?.sky_calls ?? 0);
+      await press(pasteKey);
+      await press(enterKey);
+      let results = null;
+      for (let attempt = 0; attempt < waitAttempts; attempt += 1) {
+        await press(selectAllKey);
+        await press(copyKey);
+        rawOutput = String(await clipboard.read() ?? "");
+        clipboardCalls += 1;
+        try {
+          const parsed = parseWindowsRemoteEvidenceOutput(rawOutput);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            results = parsed;
+            const returnedIds = new Set(parsed.map((item) => String(item?.id ?? "")));
+            if (probeIds.size === 0 || [...probeIds].every((id) => returnedIds.has(id))) break;
+          }
+        } catch {
+          // Markers are not in the copied buffer yet; copy again after a pause.
+        }
+        if (attempt + 1 < waitAttempts) {
+          await new Promise((resolve) => setTimeout(resolve, waitIntervalMs));
+        }
+      }
+      if (!results) throw new Error("Terminal batch timed out: output markers did not appear within the copy budget");
+      const returnedIds = new Set(results.map((result) => String(result?.id ?? "")));
+      const complete = probeIds.size === 0 || (returnedIds.size === probeIds.size && [...probeIds].every((id) => returnedIds.has(id)));
+      const allOk = complete && results.every((result) => result?.ok === true);
+      return {
+        ok: allOk,
+        verified: allOk,
+        complete,
+        results,
+        failed_ids: results.filter((result) => result?.ok !== true).map((result) => result?.id),
+        timed_out_ids: results.filter((result) => result?.error === "timeout").map((result) => result?.id),
+        stdout: rawOutput,
+        metrics: {
+          sky_calls: skyCalls,
+          state_captures: 0,
+          screenshots: 0,
+          terminal_batches: 1,
+          clipboard_calls: clipboardCalls,
+          model_roundtrips: 0,
+          automatic_fallbacks: 0,
+          duration_ms: Date.now() - started,
+        },
+      };
+    } finally {
+      if (priorClipboard != null && typeof clipboard.restore === "function") {
+        await clipboard.restore(priorClipboard).catch(() => {});
+      }
+    }
+  }
+
+  async function runBatch(input) {
+    const plan = input?.plan ?? buildWindowsRemoteEvidenceBatch(input?.probes ?? [], input?.options ?? {});
+    return execute(plan);
+  }
+
+  return Object.freeze({
+    verified: options.verified === true,
+    kinds: options.kinds ?? null,
+    estimatedMs: Number.isFinite(Number(options.estimatedMs)) ? Number(options.estimatedMs) : 4000,
+    estimatedStateCaptures: 0,
+    execute,
+    runBatch,
+  });
 }
 
 export async function selfTest() {
@@ -455,6 +641,140 @@ export async function selfTest() {
   if (!fastFailureReturned || failureFallbackCalls !== 0 || nextAfterFailure.route !== "terminal-batch"
       || strictBudget.ok || strictBudget.automatic_fallbacks !== 0) {
     throw new Error("route failure cascaded or strict latency ceiling was ignored");
+  }
+
+  // Wait/keyboard probe statements: bounded in-script waits and keyboard state.
+  const waitPlan = buildWindowsRemoteEvidenceBatch([
+    { id: "wait-1", kind: "wait-file", path: "C:\\temp\\done.txt", timeoutMs: 5000, intervalMs: 250 },
+    { id: "wait-2", kind: "wait-port", port: 8080, present: false },
+    { id: "wait-3", kind: "wait-process", name: "demo", timeoutMs: 4000, intervalMs: 300 },
+    { id: "wait-4", kind: "wait-service", name: "spooler", timeoutMs: 4000, intervalMs: 300 },
+    { id: "kbd-1", kind: "keyboard" },
+  ]);
+  if (!waitPlan.script.includes("Stopwatch") || !waitPlan.script.includes("elapsedMs")
+      || !waitPlan.script.includes("Get-WinUserLanguageList") || !waitPlan.script.includes("C:\\temp\\done.txt")
+      || !waitPlan.script.includes("Get-NetTCPConnection -LocalPort 8080")
+      || !waitPlan.script.includes("Get-Process -Name") || !waitPlan.script.includes("Get-Service -Name")) {
+    throw new Error("wait/keyboard probe statement generation self-test failed");
+  }
+  let invalidWaitRejected = false;
+  try {
+    buildWindowsRemoteEvidenceBatch([{ id: "w", kind: "wait-file", path: "x", timeoutMs: 999_999 }]);
+  } catch { invalidWaitRejected = true; }
+  if (!invalidWaitRejected) throw new Error("wait probe accepted an out-of-range timeout");
+  let invalidWaitStateRejected = false;
+  try {
+    buildWindowsRemoteEvidenceBatch([{ id: "w", kind: "wait-port", port: 80, timeoutMs: 500, intervalMs: 1 }]);
+  } catch { invalidWaitStateRejected = true; }
+  if (!invalidWaitStateRejected) throw new Error("wait probe accepted an out-of-range interval");
+
+  // Visible-client terminal bridge: paste -> enter -> copy markers -> parse and
+  // restore the pre-run clipboard; zero state captures.
+  const bridgeWindow = { id: 1, app: "demo", title: "Demo" };
+  let bridgeClipboardValue = "previous";
+  let bridgeWrote = null;
+  let bridgeReadCount = 0;
+  const bridgeKeys = [];
+  const bridgeClipboard = {
+    async read() {
+      bridgeReadCount += 1;
+      if (bridgeReadCount === 1) return bridgeClipboardValue; // pre-run snapshot
+      if (bridgeReadCount === 2) return "prompt>";            // first copy: not ready
+      return `prompt>${START_MARKER}\n[{"id":"v-1","kind":"wait-file","ok":true,"value":{"elapsedMs":120},"error":null}]\n${END_MARKER}`;
+    },
+    async write(value) { bridgeWrote = value; return { sky_calls: 0 }; },
+    async restore(value) { bridgeClipboardValue = value; },
+  };
+  const visibleBridge = createVisibleClientTerminalBridge({
+    async press_key(input) { bridgeKeys.push(input.key); },
+    async click(input) { bridgeKeys.push(`click:${input.x}`); },
+  }, {
+    verified: true,
+    window: bridgeWindow,
+    clipboard: bridgeClipboard,
+    focusPoint: { x: 10, y: 20, screenshotId: "shot-1" },
+    waitAttempts: 3,
+    waitIntervalMs: 0,
+  });
+  const bridgeBatch = await visibleBridge.runBatch({
+    probes: [{ id: "v-1", kind: "wait-file", path: "C:\\temp\\done.txt", timeoutMs: 5000, intervalMs: 250 }],
+  });
+  if (!bridgeBatch.ok || !bridgeBatch.complete || bridgeBatch.results[0]?.ok !== true
+      || bridgeBatch.metrics.state_captures !== 0 || bridgeBatch.metrics.terminal_batches !== 1
+      || bridgeBatch.metrics.sky_calls !== 7 || bridgeBatch.timed_out_ids.length !== 0
+      || !String(bridgeWrote).includes("-EncodedCommand") || bridgeClipboardValue !== "previous"
+      || bridgeKeys.join(",") !== "click:10,Control_L+v,Return,Control_L+a,Control_L+c,Control_L+a,Control_L+c") {
+    throw new Error("visible-client terminal bridge self-test failed");
+  }
+  let bridgeTimedOut = false;
+  let timeoutRestored = false;
+  const timeoutBridge = createVisibleClientTerminalBridge({ async press_key() {} }, {
+    verified: true,
+    window: bridgeWindow,
+    clipboard: {
+      async read() { return "prompt>"; },
+      async write() { return { sky_calls: 0 }; },
+      async restore() { timeoutRestored = true; },
+    },
+    waitAttempts: 2,
+    waitIntervalMs: 0,
+  });
+  try {
+    await timeoutBridge.execute(buildWindowsRemoteEvidenceBatch([{ id: "v-2", kind: "wait-file", path: "x", timeoutMs: 1000, intervalMs: 100 }]));
+  } catch { bridgeTimedOut = true; }
+  if (!bridgeTimedOut || !timeoutRestored) throw new Error("visible-client bridge timeout/restore self-test failed");
+
+  // Router: a multi-probe batch scales the state-capture baseline; wait-only
+  // kinds never fall back to a screenshot or state capture.
+  const mockSky = {
+    async list_windows() { return [bridgeWindow]; },
+    async get_window_state() { return { window: bridgeWindow, accessibility: {}, screenshots: [] }; },
+  };
+  const bigBatchRouter = createRemoteEvidenceRouter({ sky: mockSky, baselineStateCaptureMs: 3100, terminalBridge: visibleBridge });
+  const batchInspect = bigBatchRouter.inspect({
+    kind: "batch",
+    probes: [
+      { id: "r-1", kind: "wait-file", path: "C:\\a.txt", timeoutMs: 5000, intervalMs: 250 },
+      { id: "r-2", kind: "file", path: "C:\\b.txt" },
+      { id: "r-3", kind: "keyboard" },
+    ],
+  });
+  if (batchInspect.route !== "terminal-batch" || batchInspect.baseline_state_capture_ms !== 9300) {
+    throw new Error("scaled-baseline batch routing self-test failed");
+  }
+  const waitOnlyRouter = createRemoteEvidenceRouter({ sky: mockSky, baselineStateCaptureMs: 3100 });
+  const waitOnlyInspect = waitOnlyRouter.inspect({ kind: "wait-file", path: "C:\\x", id: "w1", timeoutMs: 5000, intervalMs: 250 });
+  if (waitOnlyInspect.ok || waitOnlyInspect.route !== null) {
+    throw new Error("wait-only request fell back to a non-terminal route");
+  }
+  let collectReads = 0;
+  const collectClipboard = {
+    async read() {
+      collectReads += 1;
+      return `prompt>${START_MARKER}\n[${["r-1", "r-2", "r-3"].map((id) => `{"id":"${id}","kind":"x","ok":true,"value":{},"error":null}`).join(",")}]\n${END_MARKER}`;
+    },
+    async write() { return { sky_calls: 0 }; },
+    async restore() {},
+  };
+  const collectBridge = createVisibleClientTerminalBridge({ async press_key() {} }, {
+    verified: true,
+    window: bridgeWindow,
+    clipboard: collectClipboard,
+    waitAttempts: 1,
+  });
+  const collectRouter = createRemoteEvidenceRouter({ sky: mockSky, baselineStateCaptureMs: 3100, terminalBridge: collectBridge });
+  const collectedBatch = await collectRouter.collect({
+    kind: "batch",
+    probes: [
+      { id: "r-1", kind: "file", path: "C:\\a.txt" },
+      { id: "r-2", kind: "process", name: "demo" },
+      { id: "r-3", kind: "keyboard" },
+    ],
+    verify: (result) => result.verified === true,
+  });
+  if (!collectedBatch.ok || collectedBatch.route !== "terminal-batch" || collectedBatch.metrics.state_captures !== 0
+      || collectedBatch.metrics.automatic_fallbacks !== 0 || collectedBatch.metrics.terminal_batches !== 1 || collectReads !== 2) {
+    throw new Error("router + visible bridge collect self-test failed");
   }
   return "self-test: ok";
 }

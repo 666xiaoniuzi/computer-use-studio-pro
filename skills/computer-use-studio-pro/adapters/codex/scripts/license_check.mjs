@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
 
 export const PRODUCT = "computer-use-studio-pro";
 export const AGREEMENT_VERSION = "2026.01";
-export const SKILL_VERSION = "0.8.0";
+export const SKILL_VERSION = "0.9.0";
 export const CURRENT_LICENSE_VERSION = 2;
 export const CURRENT_FINGERPRINT_VERSION = 2;
 export const PUBLIC_KEY_PEM = "__CUSPRO_PUBLIC_KEY__";
