@@ -7,7 +7,7 @@ import argparse
 from contextlib import contextmanager
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import secrets
 import shutil
@@ -17,7 +17,7 @@ import time
 
 CLASSES = {"temporary", "unrelated", "rollback", "deliverable"}
 TASK_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,63}$")
-STATE_VERSION = 2
+STATE_VERSION = 3
 
 
 def atomic_write(path: Path, data: dict) -> None:
@@ -35,7 +35,7 @@ def atomic_write(path: Path, data: dict) -> None:
 def validate_state(data: object, path: Path) -> dict:
     if not isinstance(data, dict):
         raise ValueError(f"ledger root must be an object: {path}")
-    if data.get("version") not in {1, STATE_VERSION}:
+    if data.get("version") not in {1, 2, STATE_VERSION}:
         raise ValueError(f"unsupported ledger version: {data.get('version')!r}")
     if not isinstance(data.get("task_id"), str) or not TASK_ID.fullmatch(data["task_id"]):
         raise ValueError("ledger task_id is invalid")
@@ -53,7 +53,9 @@ def validate_state(data: object, path: Path) -> dict:
         if not isinstance(item.get("created_by_task"), bool) or not isinstance(item.get("existed_before"), bool):
             raise ValueError("ledger artifact ownership flags are invalid")
     data["version"] = STATE_VERSION
+    data.setdefault("remote_root", "")
     data.setdefault("cleanup", {"status": "active", "cleaned": 0, "kept": 0, "pending": []})
+    data.setdefault("remote_cleanup", {"status": "active", "cleaned": 0, "kept": 0, "pending": []})
     return data
 
 
@@ -108,7 +110,33 @@ def validate_root(root: Path, task_id: str) -> Path:
     return resolved
 
 
-def init_state(state_path: Path, task_id: str, local_root: Path) -> dict:
+def pure_remote_path(value: str):
+    text = str(value).strip()
+    return PureWindowsPath(text) if re.match(r"^[A-Za-z]:[\\/]", text) or "\\" in text else PurePosixPath(text)
+
+
+def validate_remote_root(value: str) -> str:
+    if not value:
+        return ""
+    path = pure_remote_path(value)
+    if not path.is_absolute() or len(path.parts) < 3:
+        raise ValueError("remote_root must be an absolute task-specific path")
+    return str(path)
+
+
+def is_within_remote(path_text: str, root_text: str) -> bool:
+    if not root_text:
+        return False
+    path = pure_remote_path(path_text)
+    root = pure_remote_path(root_text)
+    if type(path) is not type(root) or not path.is_absolute():
+        return False
+    path_parts = tuple(part.casefold() for part in path.parts)
+    root_parts = tuple(part.casefold() for part in root.parts)
+    return len(path_parts) > len(root_parts) and path_parts[: len(root_parts)] == root_parts
+
+
+def init_state(state_path: Path, task_id: str, local_root: Path, remote_root: str = "") -> dict:
     root = validate_root(local_root, task_id)
     state_resolved = state_path.resolve(strict=False)
     if is_within(state_resolved, root):
@@ -121,8 +149,10 @@ def init_state(state_path: Path, task_id: str, local_root: Path) -> dict:
             "version": STATE_VERSION,
             "task_id": task_id,
             "local_root": str(root),
+            "remote_root": validate_remote_root(remote_root),
             "artifacts": [],
             "cleanup": {"status": "active", "cleaned": 0, "kept": 0, "pending": []},
+            "remote_cleanup": {"status": "active", "cleaned": 0, "kept": 0, "pending": []},
         }
         atomic_write(state_path, state)
     return state
@@ -145,7 +175,10 @@ def add_artifact(state_path: Path, path_text: str, side: str, classification: st
                 raise ValueError("task-created cleanup candidates must stay under local_root")
             stored_path = str(artifact_path)
         else:
-            stored_path = str(path_text)
+            stored_path = str(pure_remote_path(path_text))
+            protected_external = existed_before or classification == "deliverable"
+            if not protected_external and not is_within_remote(stored_path, state.get("remote_root", "")):
+                raise ValueError("task-created remote cleanup candidates must stay under remote_root")
         if any(item["side"] == side and item["path"].casefold() == stored_path.casefold() for item in state["artifacts"]):
             raise ValueError("artifact path is already tracked")
         item = {
@@ -251,13 +284,82 @@ def _cleanup_local_locked(state_path: Path, task_id: str, expected_root: Path, t
     return summary
 
 
+def plan_remote_cleanup(state_path: Path, task_id: str, task_verified: bool) -> dict:
+    state = load(state_path)
+    if state.get("task_id") != task_id:
+        raise ValueError("task_id does not match the ledger")
+    root = validate_remote_root(state.get("remote_root", ""))
+    candidates = []
+    kept = []
+    pending = []
+    for item in state["artifacts"]:
+        if item["side"] != "remote":
+            continue
+        deletable_class = item["classification"] in {"temporary", "unrelated"} or (
+            item["classification"] == "rollback" and task_verified
+        )
+        if item["created_by_task"] and not item["existed_before"] and deletable_class:
+            if not root or not is_within_remote(item["path"], root):
+                pending.append({"path": item["path"], "error": "CleanupCandidateOutsideRemoteTaskRoot"})
+            else:
+                candidates.append({"path": item["path"], "classification": item["classification"], "purpose": item["purpose"]})
+        else:
+            kept.append({"path": item["path"], "classification": item["classification"]})
+    return {
+        "status": "ready" if not pending else "cleanup_pending",
+        "remote_root": root,
+        "candidates": candidates,
+        "kept": kept,
+        "pending": pending,
+        "execution_contract": "delete exact candidate paths in one remote file/terminal batch and verify each path is absent",
+    }
+
+
+def apply_remote_cleanup_results(state_path: Path, task_id: str, task_verified: bool, results: list[dict]) -> dict:
+    if not isinstance(results, list):
+        raise ValueError("remote cleanup results must be a list")
+    with ledger_lock(state_path):
+        state = load(state_path)
+        plan = plan_remote_cleanup(state_path, task_id, task_verified)
+        allowed = {item["path"].casefold(): item for item in plan["candidates"]}
+        by_path = {}
+        for result in results:
+            if not isinstance(result, dict) or not isinstance(result.get("path"), str):
+                raise ValueError("remote cleanup result must contain path")
+            key = str(pure_remote_path(result["path"])).casefold()
+            if key not in allowed:
+                raise ValueError(f"remote cleanup result is not in the exact plan: {result['path']}")
+            by_path[key] = result
+        pending = list(plan["pending"])
+        cleaned = 0
+        kept = len(plan["kept"])
+        for item in state["artifacts"]:
+            if item["side"] != "remote":
+                continue
+            key = item["path"].casefold()
+            if key not in allowed:
+                item["cleanup_state"] = "kept" if not any(p["path"].casefold() == key for p in pending) else "pending"
+                continue
+            result = by_path.get(key)
+            if result and result.get("removed") is True and result.get("verified_absent") is True:
+                item["cleanup_state"] = "cleaned"
+                cleaned += 1
+            else:
+                item["cleanup_state"] = "pending"
+                pending.append({"path": item["path"], "error": str(result.get("error", "MissingVerifiedResult")) if result else "MissingVerifiedResult"})
+        status = "verified" if not pending and cleaned == len(allowed) else "cleanup_pending"
+        state["remote_cleanup"] = {"status": status, "cleaned": cleaned, "kept": kept, "pending": pending}
+        atomic_write(state_path, state)
+        return dict(state["remote_cleanup"])
+
+
 def self_test() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         base = Path(temp_dir)
         task_id = "task-123"
         root = base / "artifacts" / task_id
         state_path = base / "ledger" / f"{task_id}.json"
-        init_state(state_path, task_id, root)
+        init_state(state_path, task_id, root, r"C:\\CusProTasks\\task-123")
         scratch = root / "scratch.txt"
         abandoned = root / "abandoned.tmp"
         rollback = root / "rollback.bak"
@@ -279,6 +381,15 @@ def self_test() -> None:
         assert summary["status"] == "verified" and summary["cleaned"] == 3
         assert not scratch.exists() and not abandoned.exists() and not rollback.exists()
         assert deliverable.exists() and not root.exists()
+        remote_temp = r"C:\\CusProTasks\\task-123\\scratch.tmp"
+        add_artifact(state_path, remote_temp, "remote", "temporary", "remote scratch", False)
+        remote_plan = plan_remote_cleanup(state_path, task_id, task_verified=True)
+        assert len(remote_plan["candidates"]) == 1
+        remote_summary = apply_remote_cleanup_results(
+            state_path, task_id, True,
+            [{"path": remote_temp, "removed": True, "verified_absent": True}],
+        )
+        assert remote_summary["status"] == "verified" and remote_summary["cleaned"] == 1
         task_id_2 = "task-456"
         root_2 = base / "artifacts" / task_id_2
         state_2 = base / "ledger" / f"{task_id_2}.json"
@@ -309,6 +420,7 @@ def main() -> None:
     init.add_argument("--state", type=Path, required=True)
     init.add_argument("--task-id", required=True)
     init.add_argument("--local-root", type=Path, required=True)
+    init.add_argument("--remote-root", default="")
 
     add = sub.add_parser("add")
     add.add_argument("--state", type=Path, required=True)
@@ -328,17 +440,33 @@ def main() -> None:
     cleanup.add_argument("--task-verified", action="store_true")
     cleanup.add_argument("--remove-state", action="store_true")
 
+    remote_plan = sub.add_parser("plan-remote")
+    remote_plan.add_argument("--state", type=Path, required=True)
+    remote_plan.add_argument("--task-id", required=True)
+    remote_plan.add_argument("--task-verified", action="store_true")
+
+    remote_apply = sub.add_parser("apply-remote-results")
+    remote_apply.add_argument("--state", type=Path, required=True)
+    remote_apply.add_argument("--task-id", required=True)
+    remote_apply.add_argument("--task-verified", action="store_true")
+    remote_apply.add_argument("--results", type=Path, required=True, help="JSON array produced by the remote executor")
+
     args = parser.parse_args()
     if args.self_test:
         self_test()
     elif args.command == "init":
-        print(json.dumps(init_state(args.state, args.task_id, args.local_root), ensure_ascii=False))
+        print(json.dumps(init_state(args.state, args.task_id, args.local_root, args.remote_root), ensure_ascii=False))
     elif args.command == "add":
         print(json.dumps(add_artifact(args.state, args.path, args.side, args.classification, args.purpose, args.existed_before == "true"), ensure_ascii=False))
     elif args.command == "plan":
         print(json.dumps(load(args.state), ensure_ascii=False, indent=2))
     elif args.command == "cleanup-local":
         print(json.dumps(cleanup_local(args.state, args.task_id, args.local_root, args.task_verified, args.remove_state), ensure_ascii=False))
+    elif args.command == "plan-remote":
+        print(json.dumps(plan_remote_cleanup(args.state, args.task_id, args.task_verified), ensure_ascii=False, indent=2))
+    elif args.command == "apply-remote-results":
+        results = json.loads(args.results.read_text(encoding="utf-8"))
+        print(json.dumps(apply_remote_cleanup_results(args.state, args.task_id, args.task_verified, results), ensure_ascii=False))
     else:
         parser.print_help()
 

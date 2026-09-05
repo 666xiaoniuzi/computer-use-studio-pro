@@ -4,6 +4,11 @@ import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
 
+import { enforceRuntimeGate, assertLicensed } from "./license_check.mjs";
+
+// 零售授权门控：未同意协议或授权无效时在导入阶段直接拒绝运行。
+enforceRuntimeGate();
+
 const ACTIONS = new Set([
   "click",
   "press_key",
@@ -21,7 +26,102 @@ const KEYBOARD_BURST_KEYS = new Set([
   "backspace", "delete",
 ]);
 const MAX_KEYBOARD_BURST_TEXT_CHARS = 4096;
+const MAX_REMOTE_CANVAS_TEXT_CHARS = 2048;
 const EDITABLE_FOCUS = /(?:\b(?:edit|textbox|text[ -]?field|textarea|text[ -]?area|search(?:box|[ -]?field)?|input|combo[ -]?box|axtextfield|axtextarea|axsearchfield)\b|编辑|文本框|文本区域|搜索框|输入框|组合框)/iu;
+
+/** Synchronous capability negotiation: it adds no Computer Use call. */
+export function inspectSkyCapabilities(sky) {
+  const names = [
+    "get_window_state", "list_windows", "list_apps", "get_window", "activate_window",
+    "launch_app", "click", "press_key", "type_text", "set_value", "scroll", "drag",
+    "perform_secondary_action",
+  ];
+  const methods = Object.fromEntries(names.map((name) => [name, typeof sky?.[name] === "function"]));
+  return Object.freeze({
+    methods,
+    routes: {
+      window_lifecycle: methods.list_windows ? "list_windows" : methods.get_window_state ? "get_window_state" : null,
+      editable_text: methods.set_value ? "set_value" : methods.type_text ? "type_text" : methods.press_key ? "keyboard" : null,
+      semantic_actions: methods.get_window_state && methods.click
+        ? "accessibility"
+        : methods.get_window_state && methods.press_key ? "keyboard" : null,
+      persistent_fast_path: methods.get_window_state && (methods.click || methods.press_key || methods.set_value),
+    },
+  });
+}
+
+const USER_SURFACES = new Set(["remote-client", "codex"]);
+const CODEX_WINDOW_CUE = /(?:^|[\s._-])codex(?:$|[\s._-])/iu;
+
+function compactWindow(window) {
+  return window ? {
+    id: window.id,
+    app: compactText(window.app, 100),
+    title: compactText(window.title, 180),
+  } : null;
+}
+
+/**
+ * Put the exact UI surface that needs human attention in the foreground without
+ * taking an expensive window-state screenshot. Passing a bound window costs one
+ * activate call; Codex discovery costs one list call plus one activate call.
+ */
+export async function presentUserHandoffSurface(sky, options = {}) {
+  const started = Date.now();
+  const surface = String(options.surface ?? "codex").trim().toLowerCase();
+  if (!USER_SURFACES.has(surface)) throw new Error(`Unsupported user handoff surface: ${surface}`);
+  if (typeof sky?.activate_window !== "function") {
+    throw new Error("User handoff presentation requires sky.activate_window");
+  }
+
+  let target = options.window ?? null;
+  let listCalls = 0;
+  let candidateCount = target ? 1 : 0;
+  if (!target) {
+    if (surface === "remote-client") {
+      throw new Error("Remote-client presentation requires the bound remote window");
+    }
+    if (typeof sky.list_windows !== "function") {
+      throw new Error("Codex presentation requires a bound Codex window or sky.list_windows");
+    }
+    const windows = await sky.list_windows();
+    listCalls = 1;
+    if (!Array.isArray(windows)) throw new Error("sky.list_windows must return an array");
+    const explicitId = options.windowId == null ? null : String(options.windowId);
+    const appCue = String(options.appIncludes ?? "").trim().toLowerCase();
+    const titleCue = String(options.titleIncludes ?? "").trim().toLowerCase();
+    const matches = windows.filter((candidate) => {
+      if (explicitId != null) return String(candidate?.id) === explicitId;
+      const app = String(candidate?.app ?? "");
+      const title = String(candidate?.title ?? "");
+      if (appCue && !app.toLowerCase().includes(appCue)) return false;
+      if (titleCue && !title.toLowerCase().includes(titleCue)) return false;
+      return appCue || titleCue || CODEX_WINDOW_CUE.test(`${app} ${title}`);
+    });
+    candidateCount = matches.length;
+    if (matches.length === 0) throw new Error("No Codex window matched the handoff selector");
+    // list_windows is ordered by the host runtime; the first matching Codex
+    // top-level window is the deterministic fallback when no exact ID is bound.
+    target = matches[0];
+  }
+  if (target?.id == null) throw new Error("The handoff window requires an id");
+
+  await sky.activate_window({ window: target });
+  return {
+    ok: true,
+    surface,
+    window: target,
+    presented_window: compactWindow(target),
+    candidate_count: candidateCount,
+    metrics: {
+      sky_calls: listCalls + 1,
+      list_calls: listCalls,
+      activate_calls: 1,
+      duration_ms: Date.now() - started,
+      get_window_state_calls: 0,
+    },
+  };
+}
 
 const ASSIGNMENT_SECRET = /(?:\b(password|passwd|secret|token|cookie|authorization|api[_-]?key|otp|one[- ]?time code)\b|(密码|口令|令牌|密钥|验证码))\s*[:=：]\s*(?:"[^"]*"|'[^']*'|[^\s,;，；]+)/gi;
 const BEARER_SECRET = /\bbearer\s+[A-Za-z0-9._~+/=-]{8,}\b/gi;
@@ -85,7 +185,7 @@ export function compactState(state, options = {}) {
       originX: item?.originX,
       originY: item?.originY,
     }));
-  return {
+  const result = {
     window: state?.window
       ? { id: state.window.id, app: state.window.app, title: compactText(state.window.title, titleChars) }
       : null,
@@ -95,6 +195,27 @@ export function compactState(state, options = {}) {
     tree: selectedTreeLines(accessibility.tree, options.needles, treeChars, options.maxTreeLines ?? 20),
     screenshots,
   };
+  return enforceBudget(result, maxChars);
+}
+
+/** Trim lowest-value text fields so the serialized envelope stays within maxChars. */
+function enforceBudget(result, maxChars) {
+  const serialized = () => JSON.stringify(result);
+  if (serialized().length <= maxChars) return result;
+  for (const field of ["tree", "document_text", "selected_text", "focused_element"]) {
+    const original = result[field];
+    if (!original) continue;
+    let chars = String(original).length;
+    while (chars > 1 && serialized().length > maxChars) {
+      chars = Math.max(1, Math.floor(chars * 0.75));
+      result[field] = compactText(original, chars);
+    }
+    if (serialized().length <= maxChars) return result;
+  }
+  if (result.window?.title) {
+    result.window.title = compactText(result.window.title, 40);
+  }
+  return result;
 }
 
 function definedEntries(value) {
@@ -327,6 +448,27 @@ const REMOTE_CLIENT_PROFILES = Object.freeze({
     disconnected: /(?:主机(?:已)?离线|被控端(?:已)?离线|远程(?:连接|控制)(?:已)?(?:断开|结束)|连接(?:已)?断开|连接失败|host\s+offline|session\s+ended|disconnected|connection\s+(?:lost|closed|failed))/iu,
     stopped: /(?:对方(?:已)?(?:停止|终止)控制|远程控制(?:已)?(?:停止|终止|结束)|客户(?:已)?急停|remote\s+control\s+(?:was\s+)?stopped|session\s+terminated\s+by\s+(?:the\s+)?remote)/iu,
   }),
+  rustdesk: Object.freeze({
+    aliases: ["rustdesk", "rust-desk"],
+    devicePattern: /(?:rustdesk\s*(?:id|设备码)|your\s+desktop|本机(?:id|设备码)|设备(?:代码|id|编号)|远程(?:设备)?id)\s*[:：#]?\s*([A-Za-z0-9](?:[A-Za-z0-9 -]{3,20}[A-Za-z0-9]))/giu,
+    reconnecting: /(?:正在重连|正在重新连接|重连中|reconnect(?:ing)?|connecting|正在连接)/iu,
+    disconnected: /(?:连接(?:已)?断开|远程会话(?:已)?结束|对方设备(?:已)?离线|connection\s+(?:lost|closed|failed)|disconnected|remote\s+offline)/iu,
+    stopped: /(?:对方(?:已)?(?:停止|终止)远程控制|会话(?:已)?终止|客户(?:已)?急停|session\s+terminated|remote\s+control\s+(?:was\s+)?stopped)/iu,
+  }),
+  anydesk: Object.freeze({
+    aliases: ["anydesk", "any-desk"],
+    devicePattern: /(?:anydesk\s*(?:address|id)|this\s+desk|your\s+address|本机地址|设备(?:代码|id|编号)|远程(?:设备)?id)\s*[:：#]?\s*([0-9](?:[0-9 -]{3,20}[0-9]))/giu,
+    reconnecting: /(?:reconnect(?:ing)?|connecting|正在重连|正在连接)/iu,
+    disconnected: /(?:session\s+ended|desk\s+offline|connection\s+(?:lost|closed|failed)|disconnected|连接(?:已)?断开|会话(?:已)?结束)/iu,
+    stopped: /(?:session\s+(?:was\s+)?terminated|remote\s+control\s+(?:was\s+)?stopped|对方(?:已)?终止|客户(?:已)?急停)/iu,
+  }),
+  teamviewer: Object.freeze({
+    aliases: ["teamviewer", "team-viewer"],
+    devicePattern: /(?:teamviewer\s*(?:id|设备码)|your\s+id|您的id|本机id|设备(?:代码|id|编号)|远程(?:设备)?id)\s*[:：#]?\s*([0-9](?:[0-9 -]{3,20}[0-9]))/giu,
+    reconnecting: /(?:reconnect(?:ing)?|connecting|正在重连|正在连接)/iu,
+    disconnected: /(?:partner\s+offline|session\s+ended|connection\s+(?:lost|closed|failed)|disconnected|伙伴(?:已)?离线|连接(?:已)?断开)/iu,
+    stopped: /(?:session\s+(?:was\s+)?terminated|remote\s+control\s+(?:was\s+)?stopped|对方(?:已)?终止|客户(?:已)?急停)/iu,
+  }),
 });
 
 function resolveRemoteClientProfile(client) {
@@ -347,7 +489,7 @@ function profileObservedDeviceIds(profile, state) {
 }
 
 /**
- * Build synchronous ToDesk/Sunlogin signals that can be passed directly to a
+ * Build synchronous remote-client signals that can be passed directly to a
  * persistent remote session. Parsing stays inside the runtime, so unchanged
  * connection/device observations do not need a model decision.
  */
@@ -448,16 +590,32 @@ function expectationResult(state, expect) {
     return expect(state) ? { ok: true } : { ok: false, reason: "custom expectation failed" };
   }
   if (!expect) return state?.window ? { ok: true } : { ok: false, reason: "window binding was lost" };
+  if (typeof expect === "string") expect = { includes: expect };
   const text = stateText(state);
+  const caseSensitive = expect.caseSensitive !== false;
+  const normalized = (value) => caseSensitive ? String(value ?? "") : String(value ?? "").toLocaleLowerCase();
+  const contains = (actual, wanted) => normalized(actual).includes(normalized(wanted));
+  const equals = (actual, wanted) => normalized(actual) === normalized(wanted);
   const includes = Array.isArray(expect.includes) ? expect.includes : expect.includes ? [expect.includes] : [];
   const excludes = Array.isArray(expect.excludes) ? expect.excludes : expect.excludes ? [expect.excludes] : [];
-  for (const value of includes) if (!text.includes(String(value))) return { ok: false, reason: "expected text is missing" };
-  for (const value of excludes) if (text.includes(String(value))) return { ok: false, reason: "forbidden text remains" };
-  if (expect.focusedIncludes && !String(state?.accessibility?.focused_element ?? "").includes(expect.focusedIncludes)) {
+  for (const value of includes) if (!contains(text, value)) return { ok: false, reason: "expected text is missing" };
+  for (const value of excludes) if (contains(text, value)) return { ok: false, reason: "forbidden text remains" };
+  if (expect.focusedIncludes && !contains(state?.accessibility?.focused_element, expect.focusedIncludes)) {
     return { ok: false, reason: "focused element does not match the expected cue" };
   }
-  if (expect.titleIncludes && !String(state?.window?.title ?? "").includes(expect.titleIncludes)) {
+  if (expect.titleIncludes && !contains(state?.window?.title, expect.titleIncludes)) {
     return { ok: false, reason: "window title does not match the expected cue" };
+  }
+  const exactFields = [
+    ["documentEquals", state?.accessibility?.document_text, "document text"],
+    ["selectedEquals", state?.accessibility?.selected_text, "selected text"],
+    ["focusedEquals", state?.accessibility?.focused_element, "focused element"],
+    ["titleEquals", state?.window?.title, "window title"],
+  ];
+  for (const [key, actual, label] of exactFields) {
+    if (expect[key] != null && !equals(actual, expect[key])) {
+      return { ok: false, reason: `${label} does not exactly match the expected value` };
+    }
   }
   if (expect.minScreenshots != null && (state?.screenshots?.length ?? 0) < expect.minScreenshots) {
     return { ok: false, reason: `expected at least ${expect.minScreenshots} screenshot regions` };
@@ -537,6 +695,117 @@ function nextNeedsScreenshot(step) {
 
 function normalizedKey(value) {
   return String(value ?? "").replace(/\s+/g, "").toLowerCase();
+}
+
+function normalizedDeviceId(value) {
+  return String(value ?? "").replace(/[^A-Za-z0-9]/gu, "").toLowerCase();
+}
+
+function assertRemoteDeviceIdIsNotPayload(text, options = {}) {
+  const deviceId = normalizedDeviceId(options.remoteDeviceId);
+  if (!deviceId || deviceId.length < 5) return;
+  const payload = normalizedDeviceId(text);
+  if (payload.includes(deviceId)
+      && !(options.allowDeviceIdEntry === true && options.purpose === "remote-client-device-id")) {
+    const error = new Error("Remote device ID is a target fingerprint, not an application text payload");
+    error.code = "REMOTE_DEVICE_ID_PAYLOAD_BLOCKED";
+    throw error;
+  }
+}
+
+function printableAsciiKey(value, options = {}) {
+  const direct = {
+    " ": "space", "-": "minus", "=": "equal", "[": "bracketleft", "]": "bracketright",
+    "\\": "backslash", ";": "semicolon", "'": "apostrophe", ",": "comma", ".": "period", "/": "slash",
+    "`": "grave",
+  };
+  const shifted = {
+    "!": "1", "@": "2", "#": "3", "$": "4", "%": "5", "^": "6", "&": "7", "*": "8", "(": "9", ")": "0",
+    "_": "minus", "+": "equal", "{": "bracketleft", "}": "bracketright", "|": "backslash",
+    ":": "semicolon", "\"": "apostrophe", "<": "comma", ">": "period", "?": "slash", "~": "grave",
+  };
+  const capsLock = options.capsLock === true;
+  if (/^[a-z]$/u.test(value)) return capsLock ? `Shift_L+${value}` : value;
+  if (/^[A-Z]$/u.test(value)) return capsLock ? value.toLowerCase() : `Shift_L+${value.toLowerCase()}`;
+  if (/^[0-9]$/u.test(value)) return value;
+  if (direct[value]) return direct[value];
+  if (shifted[value]) return `Shift_L+${shifted[value]}`;
+  return null;
+}
+
+function remoteCanvasTextActions(text, options = {}) {
+  if (typeof text !== "string" || text.length === 0) throw new Error("Remote canvas text requires a non-empty string");
+  if (text.length > MAX_REMOTE_CANVAS_TEXT_CHARS) {
+    throw new Error(`Remote canvas text exceeds the ${MAX_REMOTE_CANVAS_TEXT_CHARS}-character limit`);
+  }
+  if (/[^\x20-\x7e]/u.test(text)) {
+    throw new Error("Remote canvas key-event input accepts printable ASCII; use a separately verified Unicode transport for other text");
+  }
+  const keyboardLayout = String(options.keyboardLayout ?? "us").trim().toLowerCase();
+  if (!new Set(["us", "en-us"]).has(keyboardLayout)) {
+    throw new Error("Remote canvas key-event input requires a verified US layout; use verified clipboard transport for other layouts");
+  }
+  assertRemoteDeviceIdIsNotPayload(text, options);
+  const actions = [];
+  if (options.clearExisting === true) {
+    actions.push({ method: "press_key", args: { key: "Control_L+a" } });
+    actions.push({ method: "press_key", args: { key: "Backspace" } });
+  }
+  for (const char of text) {
+    const key = printableAsciiKey(char, options);
+    if (!key) throw new Error(`No verified key-event mapping for character code ${char.codePointAt(0)}`);
+    actions.push({ method: "press_key", args: { key } });
+  }
+  if (options.submitKey != null) {
+    const submitKey = String(options.submitKey);
+    if (!new Set(["Return", "Tab"]).has(submitKey)) throw new Error("Remote canvas submitKey must be Return or Tab");
+    actions.push({ method: "press_key", args: { key: submitKey } });
+  }
+  return actions;
+}
+
+/** Select the lower-call remote text transport without issuing any tool call. */
+export function selectRemoteTextTransport(text, options = {}) {
+  if (typeof text !== "string" || text.length === 0) throw new Error("Remote text requires a non-empty string");
+  const preferred = options.preferredTransport ?? "auto";
+  if (!["auto", "key-events", "clipboard"].includes(preferred)) {
+    throw new Error("preferredTransport must be auto, key-events, or clipboard");
+  }
+  const clipboardReady = options.transportVerified === true && typeof options.clipboard?.write === "function";
+  const clipboardCostKnown = Number.isFinite(Number(options.clipboard?.estimatedSkyCalls))
+    && Number(options.clipboard.estimatedSkyCalls) >= 0;
+  const ascii = !/[^\x20-\x7e]/u.test(text);
+  const layout = String(options.keyboardLayout ?? "us").trim().toLowerCase();
+  const keyLayoutReady = new Set(["us", "en-us"]).has(layout);
+  if (preferred === "clipboard") {
+    if (!clipboardReady) throw new Error("Preferred clipboard transport requires a verified clipboard bridge");
+    return Object.freeze({ transport: "verified-clipboard", reason: "explicit", estimated_sky_calls: clipboardTextSkyCalls(options) });
+  }
+  if (preferred === "key-events") {
+    if (!ascii || !keyLayoutReady) throw new Error("Preferred key-event transport requires printable ASCII and a verified US layout");
+    return Object.freeze({ transport: "key-events", reason: "explicit", estimated_sky_calls: keyEventTextSkyCalls(text, options) });
+  }
+  if (clipboardReady) {
+    const clipboardCalls = clipboardTextSkyCalls(options);
+    const keyCalls = ascii && keyLayoutReady ? keyEventTextSkyCalls(text, options) : Infinity;
+    if ((!ascii || !keyLayoutReady) || (clipboardCostKnown && clipboardCalls < keyCalls)) {
+      return Object.freeze({ transport: "verified-clipboard", reason: ascii && keyLayoutReady ? "fewer-sky-calls" : "unicode-or-layout", estimated_sky_calls: clipboardCalls, alternative_sky_calls: keyCalls });
+    }
+  }
+  if (!ascii || !keyLayoutReady) throw new Error("Remote text requires a verified clipboard bridge for Unicode or a non-US keyboard layout");
+  return Object.freeze({ transport: "key-events", reason: "lowest-available-call-count", estimated_sky_calls: keyEventTextSkyCalls(text, options) });
+}
+
+function keyEventTextSkyCalls(text, options = {}) {
+  return text.length + (options.focusPoint ? 1 : 0) + (options.clearExisting === true ? 2 : 0)
+    + (options.submitKey ? 1 : 0) + 1;
+}
+
+function clipboardTextSkyCalls(options = {}) {
+  const bridgeCalls = Number(options.clipboard?.estimatedSkyCalls);
+  return (options.focusPoint ? 1 : 0) + (options.clearExisting === true ? 2 : 0)
+    + (Number.isFinite(bridgeCalls) && bridgeCalls >= 0 ? bridgeCalls : 0)
+    + 1 + (options.submitKey ? 1 : 0) + 1;
 }
 
 function validateKeyboardBurst(observation, steps, options) {
@@ -624,6 +893,8 @@ function screenshotGeometry(state) {
  * latency optimizations never weaken target selection or verification.
  */
 export function createPersistentWindowSession(sky, options = {}) {
+  assertLicensed();
+
   if (!sky || typeof sky.get_window_state !== "function") {
     throw new Error("A callable approved sky runtime is required");
   }
@@ -646,6 +917,7 @@ export function createPersistentWindowSession(sky, options = {}) {
   const authorizationVerifier = options.authorizationVerifier;
   const stopSignalVerifier = options.stopSignalVerifier;
   const playbookCache = options.playbookCache ?? null;
+  const checkpointStore = options.checkpointStore ?? null;
   const rawPlaybookContext = options.playbookContext ?? null;
   const disconnectErrorMatcher = options.disconnectErrorMatcher ?? defaultDisconnectErrorMatcher;
   const clock = options.clock ?? Date.now;
@@ -671,12 +943,17 @@ export function createPersistentWindowSession(sky, options = {}) {
       && (typeof playbookCache.match !== "function" || typeof playbookCache.recordVerifiedSuccess !== "function")) {
     throw new Error("playbookCache must expose match and recordVerifiedSuccess");
   }
+  if (checkpointStore != null
+      && (typeof checkpointStore.record !== "function" || typeof checkpointStore.flush !== "function")) {
+    throw new Error("checkpointStore must expose record and flush");
+  }
   if (rawPlaybookContext != null && typeof rawPlaybookContext !== "object" && typeof rawPlaybookContext !== "function") {
     throw new Error("playbookContext must be an object or function");
   }
   const maxBurstActions = options.maxBurstActions ?? 3;
   const maxSamePathAttempts = options.maxSamePathAttempts ?? 2;
   const defaultHandoffSettleMs = options.handoffSettleMs ?? 350;
+  const minInitialAspectRatio = options.minInitialAspectRatio ?? (mode === "remote-fast-fix" ? 0.15 : 0);
   // Legacy screenshotOnSemanticChange now selects a first-pass capture.
   // Remote mode defaults to text+screenshot in the same expensive state call;
   // explicit false retains the semantic-only fast path for bounded checks.
@@ -700,6 +977,9 @@ export function createPersistentWindowSession(sky, options = {}) {
   if (!Number.isInteger(defaultHandoffSettleMs) || defaultHandoffSettleMs < 0 || defaultHandoffSettleMs > 2_000) {
     throw new Error("handoffSettleMs must be an integer from 0 to 2000");
   }
+  if (!Number.isFinite(minInitialAspectRatio) || minInitialAspectRatio < 0 || minInitialAspectRatio > 1) {
+    throw new Error("minInitialAspectRatio must be between 0 and 1");
+  }
   for (const [kind, duration] of Object.entries(observationLeaseMs)) {
     if (!(duration === Infinity || (Number.isFinite(duration) && duration >= 0))) {
       throw new Error(`${kind} observation lease must be zero or greater`);
@@ -707,6 +987,7 @@ export function createPersistentWindowSession(sky, options = {}) {
   }
 
   let window = initialWindow;
+  let hostCodexWindow = options.hostCodexWindow ?? null;
   let state = options.observation ?? null;
   let initialized = false;
   let layoutEpoch = 0;
@@ -726,7 +1007,9 @@ export function createPersistentWindowSession(sky, options = {}) {
   let stopReason = "";
   let successVerified = false;
   let successEpoch = null;
-  let lastVerifiedCheckpoint = null;
+  let lastVerifiedCheckpoint = options.resumeCheckpoint?.last_verified_checkpoint ?? null;
+  let checkpointWrites = 0;
+  let checkpointError = null;
   let boundLabeledDeviceIds = null;
   let lastObservationAt = null;
   let playbookContext = null;
@@ -740,6 +1023,25 @@ export function createPersistentWindowSession(sky, options = {}) {
     rollback: [...(options.playbookRollback ?? [])].slice(0, 2),
   };
   const attempts = new Map();
+
+  function queueCheckpoint(event) {
+    if (!checkpointStore) return;
+    checkpointWrites += 1;
+    void checkpointStore.record({
+      event,
+      mode,
+      operation_scope: operationScope,
+      task_scope: compactText(taskScope, 400),
+      target_fingerprint: targetFingerprint(),
+      session_status: sessionStatus,
+      authorization_status: authorizationStatus,
+      control_owner: controlOwner,
+      layout_epoch: layoutEpoch,
+      semantic_epoch: semanticEpoch,
+      last_verified_checkpoint: lastVerifiedCheckpoint,
+      handoff: lastControlHandoff,
+    }).catch((error) => { checkpointError = compactText(error?.message ?? error, 200); });
+  }
 
   async function resolvePlaybookContext(nextState) {
     if (!playbookCache || mode !== "remote-fast-fix") return null;
@@ -903,6 +1205,7 @@ export function createPersistentWindowSession(sky, options = {}) {
     }
     if (latch) stopLatched = true;
     if (emergency) emergencyStopped = true;
+    queueCheckpoint(`transition:${nextStatus}`);
   }
 
   function failTargetLock(message, reason = "target-lock-changed") {
@@ -1056,6 +1359,7 @@ export function createPersistentWindowSession(sky, options = {}) {
       semantic_epoch: semanticEpoch,
       summary: compactState(verifiedState, { maxChars: 800 }),
     };
+    queueCheckpoint(`verified:${kind}`);
   }
 
   function withSessionMeta(result, changes = {}, extra = {}) {
@@ -1077,6 +1381,19 @@ export function createPersistentWindowSession(sky, options = {}) {
     };
   }
 
+  async function presentUserSurface(surface = "remote-client", presentOptions = {}) {
+    const selected = String(surface).trim().toLowerCase();
+    const explicitWindow = presentOptions.window
+      ?? (selected === "remote-client" ? window : hostCodexWindow);
+    const presentation = await presentUserHandoffSurface(sky, {
+      ...presentOptions,
+      surface: selected,
+      window: explicitWindow,
+    });
+    if (selected === "codex") hostCodexWindow = presentation.window;
+    return presentation;
+  }
+
   async function initialObserve(observeOptions = {}) {
     if (initialized) return withSessionMeta({
       state,
@@ -1085,13 +1402,67 @@ export function createPersistentWindowSession(sky, options = {}) {
       metrics: { actions: 0, observations: 0, sky_calls: 0, duration_ms: 0, observation_chars: 0, compact_chars: 0, screenshot_regions: state?.screenshots?.length ?? 0 },
     });
     if (!window) throw new Error("Initial observation requires a target window");
+    const initialStarted = Date.now();
+    let startupSkyCalls = 0;
     try {
+      const supplied = options.observation;
+      const reuseSupplied = supplied && observeOptions.reuseSuppliedObservation !== false;
+      if (mode === "remote-fast-fix"
+          && !reuseSupplied
+          && observeOptions.activateTarget !== false
+          && options.activateTargetOnStart !== false
+          && typeof sky.activate_window === "function") {
+        const presentation = await presentUserSurface("remote-client");
+        startupSkyCalls += presentation.metrics.sky_calls;
+      }
+      if (reuseSupplied) {
+        validateObservation(supplied);
+        const initialShot = topScreenshot(supplied);
+        if (mode === "remote-fast-fix" && !initialShot?.id) {
+          throw new Error("A reused remote initial observation requires a current full screenshot");
+        }
+        if (mode === "remote-fast-fix" && initialShot?.width > 0 && initialShot?.height > 0
+            && initialShot.height / initialShot.width < minInitialAspectRatio) {
+          const error = new Error("Remote client candidate is collapsed or too short for a usable remote canvas");
+          error.code = "REMOTE_CLIENT_CANVAS_COLLAPSED";
+          throw error;
+        }
+        const changes = acceptState(supplied, {
+          activateAuthorization: mode === "remote-fast-fix",
+          explicitAuthorization: options.authorizationGranted === true,
+        });
+        initialized = true;
+        pendingVisualRefresh = false;
+        rememberVerifiedCheckpoint("initial-map-reused", supplied);
+        await matchVerifiedPlaybook(supplied);
+        const summary = compactState(supplied, observeOptions);
+        return withSessionMeta({
+          ok: true,
+          state: supplied,
+          summary,
+          metrics: {
+            actions: 0, observations: 0, sky_calls: startupSkyCalls, duration_ms: Date.now() - initialStarted,
+            observation_chars: 0, compact_chars: JSON.stringify(summary).length,
+            screenshot_regions: supplied.screenshots?.length ?? 0,
+            saved_observations: 1,
+          },
+        }, changes, { reused: true, reused_initial_observation: true, playbook_match: playbookMatch });
+      }
       const result = await observeCompact(sky, window, {
         ...options,
         ...observeOptions,
         include_screenshot: true,
         include_text: observeOptions.include_text ?? options.initialIncludeText ?? true,
       });
+      const initialShot = topScreenshot(result.state);
+      if (mode === "remote-fast-fix" && initialShot?.width > 0 && initialShot?.height > 0
+          && initialShot.height / initialShot.width < minInitialAspectRatio) {
+        const error = new Error("Remote client candidate is collapsed or too short for a usable remote canvas");
+        error.code = "REMOTE_CLIENT_CANVAS_COLLAPSED";
+        error.width = initialShot.width;
+        error.height = initialShot.height;
+        throw error;
+      }
       const changes = acceptState(result.state, {
         activateAuthorization: mode === "remote-fast-fix",
         explicitAuthorization: options.authorizationGranted === true,
@@ -1100,6 +1471,8 @@ export function createPersistentWindowSession(sky, options = {}) {
       pendingVisualRefresh = false;
       rememberVerifiedCheckpoint("initial-map", result.state);
       await matchVerifiedPlaybook(result.state);
+      result.metrics.sky_calls += startupSkyCalls;
+      result.metrics.duration_ms = Date.now() - initialStarted;
       return withSessionMeta(result, changes, { reused: false, playbook_match: playbookMatch });
     } catch (error) {
       handleRuntimeError(error, "initial-observation");
@@ -1138,6 +1511,19 @@ export function createPersistentWindowSession(sky, options = {}) {
     if (!initialized) await initialObserve();
     assertInputAllowed(state);
     const inputLease = assertObservationFresh(action);
+    if (mode === "remote-fast-fix" && action?.method === "type_text") {
+      assertRemoteDeviceIdIsNotPayload(action.args?.text, {
+        remoteDeviceId,
+        allowDeviceIdEntry: action.allowDeviceIdEntry,
+        purpose: action.purpose,
+      });
+      if (!EDITABLE_FOCUS.test(String(state?.accessibility?.focused_element ?? ""))
+          && action.remoteTextTransportVerified !== true) {
+        const error = new Error("Opaque remote canvas text must use the verified remote key-event burst");
+        error.code = "REMOTE_TEXT_TRANSPORT_UNVERIFIED";
+        throw error;
+      }
+    }
     try {
       successVerified = false;
       successEpoch = null;
@@ -1254,6 +1640,23 @@ export function createPersistentWindowSession(sky, options = {}) {
     }
     assertInputAllowed(state);
     const inputLease = assertObservationFresh(steps);
+    if (mode === "remote-fast-fix") {
+      const textSteps = steps.filter((step) => step?.method === "type_text");
+      for (const step of textSteps) {
+        assertRemoteDeviceIdIsNotPayload(step.args?.text, {
+          remoteDeviceId,
+          allowDeviceIdEntry: step.allowDeviceIdEntry,
+          purpose: step.purpose,
+        });
+      }
+      if (textSteps.length > 0
+          && !EDITABLE_FOCUS.test(String(state?.accessibility?.focused_element ?? ""))
+          && burstOptions.remoteTextTransportVerified !== true) {
+        const error = new Error("Opaque remote canvas text must use remoteCanvasText key-event transport");
+        error.code = "REMOTE_TEXT_TRANSPORT_UNVERIFIED";
+        throw error;
+      }
+    }
     successVerified = false;
     successEpoch = null;
     const priorState = state;
@@ -1285,6 +1688,94 @@ export function createPersistentWindowSession(sky, options = {}) {
       single_pass_screenshot: includeScreenshot,
       input_lease: inputLease,
     });
+  }
+
+  async function remoteCanvasText(text, canvasOptions = {}) {
+    if (mode !== "remote-fast-fix") throw new Error("remoteCanvasText applies only to remote-fast-fix sessions");
+    if (!initialized) await initialObserve();
+    assertInputAllowed(state);
+    const focusPoint = canvasOptions.focusPoint;
+    const leaseAction = focusPoint
+      ? { method: "click", args: { x: focusPoint.x, y: focusPoint.y, screenshotId: focusPoint.screenshotId } }
+      : { method: "press_key", args: { key: "space" } };
+    const inputLease = assertObservationFresh(leaseAction);
+    successVerified = false;
+    successEpoch = null;
+    const priorState = state;
+    const result = await runRemoteCanvasTextBurst(sky, state, text, {
+      ...canvasOptions,
+      remoteDeviceId,
+      transactionClass: canvasOptions.transactionClass ?? "local-reversible",
+      visualVerificationRequired: canvasOptions.visualVerificationRequired ?? true,
+      observationGuard: async (currentState) => {
+        validateRemoteState(currentState);
+        if (canvasOptions.observationGuard) await canvasOptions.observationGuard(currentState);
+      },
+    });
+    const changes = result.state?.window ? acceptState(result.state) : {};
+    if (!result.ok && result.outcome === "unknown" && !stopLatched && authorizationStatus === "active") {
+      transition("stalled", "remote-canvas-text-outcome-unknown");
+    }
+    if (result.verified) {
+      rememberVerifiedCheckpoint("remote-canvas-text", state);
+      rememberPlaybookStep({ method: "remote-canvas-text", playbookTarget: canvasOptions.playbookTarget }, priorState, canvasOptions.finalExpect, "verified-remote-canvas-text");
+    }
+    return withSessionMeta(result, changes, {
+      input_lease: inputLease,
+      single_terminal_screenshot: true,
+      transport: "key-events",
+    });
+  }
+
+  async function remoteUnicodeText(text, unicodeOptions = {}) {
+    if (mode !== "remote-fast-fix") throw new Error("remoteUnicodeText applies only to remote-fast-fix sessions");
+    if (!initialized) await initialObserve();
+    assertInputAllowed(state);
+    const focusPoint = unicodeOptions.focusPoint;
+    const leaseAction = focusPoint
+      ? { method: "click", args: { x: focusPoint.x, y: focusPoint.y, screenshotId: focusPoint.screenshotId } }
+      : { method: "press_key", args: { key: "space" } };
+    const inputLease = assertObservationFresh(leaseAction);
+    successVerified = false;
+    successEpoch = null;
+    const priorState = state;
+    const result = await runRemoteUnicodeText(sky, state, text, {
+      ...unicodeOptions,
+      remoteDeviceId,
+      transactionClass: unicodeOptions.transactionClass ?? "local-reversible",
+      visualVerificationRequired: unicodeOptions.visualVerificationRequired ?? true,
+      observationGuard: async (currentState) => {
+        validateRemoteState(currentState);
+        if (unicodeOptions.observationGuard) await unicodeOptions.observationGuard(currentState);
+      },
+    });
+    const changes = result.state?.window ? acceptState(result.state) : {};
+    if (!result.ok && result.outcome === "unknown" && !stopLatched && authorizationStatus === "active") {
+      transition("stalled", "remote-unicode-text-outcome-unknown");
+    }
+    if (result.verified) {
+      rememberVerifiedCheckpoint("remote-unicode-text", state);
+      rememberPlaybookStep({ method: "remote-unicode-text", playbookTarget: unicodeOptions.playbookTarget }, priorState, unicodeOptions.finalExpect, "verified-remote-unicode-text");
+    }
+    return withSessionMeta(result, changes, {
+      input_lease: inputLease,
+      single_terminal_screenshot: true,
+      transport: "verified-clipboard",
+    });
+  }
+
+  async function remoteText(text, textOptions = {}) {
+    if (mode !== "remote-fast-fix") throw new Error("remoteText applies only to remote-fast-fix sessions");
+    const selection = selectRemoteTextTransport(text, textOptions);
+    const result = selection.transport === "verified-clipboard"
+      ? await remoteUnicodeText(text, textOptions)
+      : await remoteCanvasText(text, textOptions);
+    return {
+      ...result,
+      transport: selection.transport,
+      transport_selection: selection,
+      transport_selection_calls: 0,
+    };
   }
 
   function noteAttempt(signature, strategy) {
@@ -1339,7 +1830,7 @@ export function createPersistentWindowSession(sky, options = {}) {
     }
   }
 
-  function pauseForUserInput(reason = "user-credential-entry", handoffOptions = {}) {
+  async function pauseForUserInput(reason = "user-credential-entry", handoffOptions = {}) {
     if (mode !== "remote-fast-fix") throw new Error("pauseForUserInput applies only to remote-fast-fix sessions");
     assertInputAllowed();
     if (handoffOptions == null || typeof handoffOptions !== "object" || Array.isArray(handoffOptions)) {
@@ -1353,13 +1844,23 @@ export function createPersistentWindowSession(sky, options = {}) {
         && (typeof handoffOptions.transactionOptions !== "object" || Array.isArray(handoffOptions.transactionOptions))) {
       throw new Error("handoff transactionOptions must be an object");
     }
+    if (handoffOptions.presentation != null
+        && (typeof handoffOptions.presentation !== "object" || Array.isArray(handoffOptions.presentation))) {
+      throw new Error("handoff presentation must be an object");
+    }
+    const surface = String(handoffOptions.surface ?? "remote-client").trim().toLowerCase();
+    if (!USER_SURFACES.has(surface)) throw new Error(`Unsupported user handoff surface: ${surface}`);
     const settleMs = handoffOptions.settleMs ?? defaultHandoffSettleMs;
     if (!Number.isInteger(settleMs) || settleMs < 0 || settleMs > 2_000) {
       throw new Error("handoff settleMs must be an integer from 0 to 2000");
     }
+    // Present first, then change ownership. A failed foreground switch leaves
+    // Agent control intact instead of asking the user to act on a hidden UI.
+    const presentation = await presentUserSurface(surface, handoffOptions.presentation ?? {});
     const handoffId = `handoff-${++handoffSequence}`;
     pendingHandoffPlan = {
       id: handoffId,
+      surface,
       returnExpect: handoffOptions.returnExpect ?? null,
       steps: handoffOptions.steps ?? null,
       buildSteps: handoffOptions.buildSteps ?? null,
@@ -1373,12 +1874,18 @@ export function createPersistentWindowSession(sky, options = {}) {
     lastControlHandoff = {
       id: handoffId,
       reason: compactText(reason, 240),
+      instruction: compactText(handoffOptions.instruction ?? reason, 240),
+      surface,
+      presented_window: presentation.presented_window,
+      presentation_sky_calls: presentation.metrics.sky_calls,
+      presentation_get_window_state_calls: 0,
       paused_at: new Date().toISOString(),
       resumed_at: null,
       completion_signaled: false,
       fast_resume_ready: pendingHandoffPlan.returnExpect != null,
       continuation_steps: pendingHandoffPlan.steps?.length ?? (pendingHandoffPlan.buildSteps ? "dynamic" : 0),
     };
+    queueCheckpoint("handoff:paused");
     return snapshot();
   }
 
@@ -1399,6 +1906,7 @@ export function createPersistentWindowSession(sky, options = {}) {
       lastControlHandoff.completion_signaled = true;
       lastControlHandoff.signal_source = pendingHandoffPlan.signalSource;
     }
+    queueCheckpoint("handoff:completion-signaled");
     return {
       handoff_id: pendingHandoffPlan.id,
       completion_signaled: true,
@@ -1407,14 +1915,14 @@ export function createPersistentWindowSession(sky, options = {}) {
   }
 
   async function fastWindowBindingCheck(enabled = true) {
-    if (!enabled || typeof sky.list_windows !== "function") return { checked: false, ok: true, calls: 0 };
+    if (!enabled || typeof sky.list_windows !== "function") return { checked: false, ok: true, calls: 0, window };
     const windows = await sky.list_windows();
     if (!Array.isArray(windows)) throw new Error("sky.list_windows must return an array");
     const match = windows.find((candidate) => (
       String(candidate?.id) === String(window?.id)
       && (!expectedApp || String(candidate?.app ?? "") === expectedApp)
     ));
-    return { checked: true, ok: Boolean(match), calls: 1 };
+    return { checked: true, ok: Boolean(match), calls: 1, window: match ?? null };
   }
 
   function completeControlHandoff() {
@@ -1430,11 +1938,15 @@ export function createPersistentWindowSession(sky, options = {}) {
       throw new Error("The connected authorization lease is not active");
     }
     if (controlOwner !== "user") throw new Error("Remote control is not paused for user input");
+    const started = Date.now();
+    const presentation = await presentUserSurface("remote-client");
     const result = await observe("user-handoff-return", {
       ...observeOptions,
       include_screenshot: observeOptions.include_screenshot ?? true,
     });
     completeControlHandoff();
+    result.metrics.sky_calls += presentation.metrics.sky_calls;
+    result.metrics.duration_ms = Date.now() - started;
     return {
       ...result,
       authorization_check_mode: "session-lease",
@@ -1481,6 +1993,8 @@ export function createPersistentWindowSession(sky, options = {}) {
       });
     }
 
+    const resumePresentation = await presentUserSurface("remote-client", { window: windowCheck.window ?? window });
+
     const returnExpect = resumeOptions.expect ?? plan.returnExpect;
     if (returnExpect == null) throw new Error("resumeAndContinue requires a prepared or supplied return expectation");
     const observation = await observe("user-handoff-fast-return", {
@@ -1493,7 +2007,7 @@ export function createPersistentWindowSession(sky, options = {}) {
     const returnCheck = expectationResult(observation.state, returnExpect);
     if (!returnCheck.ok) {
       completeControlHandoff();
-      observation.metrics.sky_calls += windowCheck.calls;
+      observation.metrics.sky_calls += windowCheck.calls + resumePresentation.metrics.sky_calls;
       observation.metrics.duration_ms = Date.now() - started;
       observation.metrics.handoff_settle_ms = settleMs;
       observation.metrics.model_roundtrips_saved = 0;
@@ -1525,7 +2039,7 @@ export function createPersistentWindowSession(sky, options = {}) {
 
     if (!steps?.length) {
       rememberVerifiedCheckpoint("handoff-resume", observation.state);
-      observation.metrics.sky_calls += windowCheck.calls;
+      observation.metrics.sky_calls += windowCheck.calls + resumePresentation.metrics.sky_calls;
       observation.metrics.duration_ms = Date.now() - started;
       observation.metrics.handoff_settle_ms = settleMs;
       observation.metrics.model_roundtrips_saved = 1;
@@ -1548,7 +2062,7 @@ export function createPersistentWindowSession(sky, options = {}) {
       promoteFailureScreenshot: false,
     });
     mergeMetrics(continued.metrics, observation.metrics);
-    continued.metrics.sky_calls += windowCheck.calls;
+    continued.metrics.sky_calls += windowCheck.calls + resumePresentation.metrics.sky_calls;
     continued.metrics.duration_ms = Date.now() - started;
     continued.metrics.handoff_settle_ms = settleMs;
     continued.metrics.model_roundtrips_saved = continued.ok ? 1 : 0;
@@ -1655,7 +2169,27 @@ export function createPersistentWindowSession(sky, options = {}) {
   async function verifySuccess(verifyOptions = {}) {
     if (success == null) throw new Error("No terminal success condition is configured");
     if (mode === "remote-fast-fix") assertInputAllowed(state);
-    const observation = await observe("verification", { ...verifyOptions, include_screenshot: true });
+    const maxReuseAgeMs = verifyOptions.maxReuseAgeMs ?? 5_000;
+    const requireScreenshot = verifyOptions.requireScreenshot ?? true;
+    const reusable = verifyOptions.forceRefresh !== true
+      && state?.window
+      && observationAgeMs() <= maxReuseAgeMs
+      && !pendingVisualRefresh
+      && (!requireScreenshot || (state.screenshots?.length ?? 0) > 0)
+      && expectationResult(state, success).ok;
+    const observation = reusable
+      ? withSessionMeta({
+        ok: true,
+        state,
+        summary: compactState(state, verifyOptions),
+        metrics: {
+          actions: 0, observations: 0, sky_calls: 0, duration_ms: 0,
+          observation_chars: 0, compact_chars: 0,
+          screenshot_regions: state.screenshots?.length ?? 0,
+          saved_observations: 1,
+        },
+      }, {}, { reused: true, reused_terminal_observation: true })
+      : await observe("verification", { ...verifyOptions, include_screenshot: requireScreenshot });
     const check = expectationResult(observation.state, success);
     successVerified = check.ok;
     successEpoch = check.ok ? { layout: layoutEpoch, semantic: semanticEpoch } : null;
@@ -1669,7 +2203,8 @@ export function createPersistentWindowSession(sky, options = {}) {
       reason: check.reason ?? null,
       state: observation.state,
       summary: observation.summary,
-    }, {}, { playbook_recording: playbookRecording });
+      metrics: observation.metrics,
+    }, {}, { playbook_recording: playbookRecording, reused_terminal_observation: reusable });
   }
 
   function snapshot(summaryOptions = {}) {
@@ -1681,6 +2216,7 @@ export function createPersistentWindowSession(sky, options = {}) {
       success_verified: successVerified,
       target_fingerprint: targetFingerprint(),
       window: state?.window ?? window,
+      host_codex_window: compactWindow(hostCodexWindow),
       layout_epoch: layoutEpoch,
       semantic_epoch: semanticEpoch,
       pending_visual_refresh: pendingVisualRefresh,
@@ -1696,8 +2232,25 @@ export function createPersistentWindowSession(sky, options = {}) {
       last_verified_checkpoint: lastVerifiedCheckpoint,
       last_control_handoff: lastControlHandoff,
       handoff_pending: Boolean(pendingHandoffPlan),
+      checkpoint_writes: checkpointWrites,
+      checkpoint_error: checkpointError,
+      restored_from_checkpoint: Boolean(options.resumeCheckpoint),
       summary: state ? compactState(state, summaryOptions) : null,
     };
+  }
+
+  async function flushCheckpoint() {
+    if (!checkpointStore) return { flushed: false, reason: "checkpoint-store-not-configured" };
+    await checkpointStore.flush();
+    return { flushed: true, writes: checkpointWrites, error: checkpointError };
+  }
+
+  async function clearCheckpoint() {
+    if (!checkpointStore || typeof checkpointStore.clear !== "function") {
+      return { cleared: false, reason: "checkpoint-clear-not-configured" };
+    }
+    await checkpointStore.flush();
+    return checkpointStore.clear();
   }
 
   return Object.freeze({
@@ -1706,12 +2259,16 @@ export function createPersistentWindowSession(sky, options = {}) {
     act,
     transaction,
     keyboardBurst,
+    remoteText,
+    remoteCanvasText,
+    remoteUnicodeText,
     noteAttempt,
     clearAttempts,
     markLayoutChanged,
     markContentChanged,
     markDisconnected,
     emergencyStop,
+    presentUserSurface,
     pauseForUserInput,
     signalUserInputComplete,
     resumeAgentControl,
@@ -1724,6 +2281,8 @@ export function createPersistentWindowSession(sky, options = {}) {
     assertInputAllowed,
     assertObservationFresh,
     observationAgeMs,
+    flushCheckpoint,
+    clearCheckpoint,
     snapshot,
   });
 }
@@ -1752,6 +2311,8 @@ export async function observeCompact(sky, window, options = {}) {
 }
 
 export async function actAndRefresh(sky, observation, action, refresh = {}) {
+  assertLicensed();
+
   validateObservation(observation);
   validateAction(observation, action);
   if (refresh.expect == null && refresh.allowUnverified !== true) {
@@ -1992,6 +2553,305 @@ export async function runKeyboardBurst(sky, observation, steps, options = {}) {
     state,
     summary,
     metrics,
+  };
+}
+
+/**
+ * Type printable ASCII into an opaque remote-desktop canvas using forwarded
+ * key events, then pay for exactly one terminal state/screenshot capture.
+ * The device ID remains target metadata and is blocked from ordinary payloads.
+ */
+export async function runRemoteCanvasTextBurst(sky, observation, text, options = {}) {
+  validateObservation(observation);
+  if (!sky || typeof sky.press_key !== "function" || typeof sky.get_window_state !== "function") {
+    throw new Error("Remote canvas text requires press_key and get_window_state");
+  }
+  if (options.transactionClass !== "local-reversible") {
+    throw new Error("Remote canvas text requires transactionClass: 'local-reversible'");
+  }
+  if (!TRANSACTION_RISKS.has(options.risk ?? "reversible")) {
+    throw new Error("Remote canvas text is limited to low-risk or reversible work");
+  }
+  if (options.stabilityConfirmed !== true || options.focusVerified !== true) {
+    throw new Error("Remote canvas text requires stabilityConfirmed and focusVerified for the current screenshot");
+  }
+  if (options.confirmationBoundary !== false) {
+    throw new Error("Remote canvas text requires confirmationBoundary: false after scope review");
+  }
+  if (options.clearExisting === true && options.mutationAuthorized !== true) {
+    throw new Error("Replacing existing remote text requires mutationAuthorized: true");
+  }
+  if (options.visualVerificationRequired === false && options.finalExpect == null) {
+    throw new Error("Remote canvas text requires terminal visual verification or finalExpect");
+  }
+  const shot = topScreenshot(observation);
+  if (!shot?.id) throw new Error("Remote canvas text requires one current full screenshot");
+  const actions = remoteCanvasTextActions(text, options);
+  if (actions.length === 0) throw new Error("Remote canvas text produced no key events");
+  const started = Date.now();
+  let state = observation;
+  const metrics = {
+    actions: 0,
+    observations: 0,
+    sky_calls: 0,
+    duration_ms: 0,
+    observation_chars: 0,
+    compact_chars: 0,
+    screenshot_regions: 0,
+    baseline_observations: actions.length + (options.focusPoint ? 1 : 0),
+    saved_observations: Math.max(0, actions.length + (options.focusPoint ? 1 : 0) - 1),
+  };
+  try {
+    if (options.beforeBurst) await options.beforeBurst(state);
+    if (options.focusPoint) {
+      if (typeof sky.click !== "function") throw new Error("focusPoint requires click");
+      const point = screenshotPoint(state, options.focusPoint.x, options.focusPoint.y, options.focusPoint.screenshotId);
+      await sky.click({ window: state.window, ...point });
+      metrics.actions += 1;
+      metrics.sky_calls += 1;
+    }
+    for (const action of actions) {
+      await sky.press_key({ window: state.window, key: action.args.key });
+      metrics.actions += 1;
+      metrics.sky_calls += 1;
+    }
+  } catch (error) {
+    metrics.duration_ms = Date.now() - started;
+    return {
+      ok: false,
+      verified: false,
+      outcome: "unknown",
+      completed: metrics.actions,
+      reason: String(error),
+      state,
+      summary: compactState(state, options),
+      metrics,
+    };
+  }
+
+  try {
+    state = await sky.get_window_state({
+      window: state.window,
+      include_screenshot: true,
+      include_text: options.include_text ?? (options.finalExpect != null),
+    });
+    validateObservation(state);
+    metrics.observations = 1;
+    metrics.sky_calls += 1;
+    metrics.observation_chars += observationChars(state);
+    metrics.screenshot_regions += state?.screenshots?.length ?? 0;
+  } catch (error) {
+    metrics.duration_ms = Date.now() - started;
+    return {
+      ok: false,
+      verified: false,
+      outcome: "unknown",
+      completed: metrics.actions,
+      reason: `terminal refresh failed: ${error}`,
+      state,
+      summary: compactState(state, options),
+      metrics,
+    };
+  }
+
+  if ((state.screenshots?.length ?? 0) === 0) {
+    metrics.duration_ms = Date.now() - started;
+    return {
+      ok: false,
+      verified: false,
+      outcome: "failed",
+      completed: metrics.actions,
+      reason: "terminal screenshot was not returned",
+      state,
+      summary: compactState(state, options),
+      metrics,
+    };
+  }
+  if (options.observationGuard) {
+    try {
+      await options.observationGuard(state);
+    } catch (error) {
+      metrics.duration_ms = Date.now() - started;
+      return {
+        ok: false,
+        verified: false,
+        outcome: "failed",
+        completed: metrics.actions,
+        reason: `observation guard failed: ${error}`,
+        state,
+        summary: compactState(state, options),
+        metrics,
+      };
+    }
+  }
+  let verified = false;
+  if (options.finalExpect != null) {
+    const check = expectationResult(state, options.finalExpect);
+    if (!check.ok) {
+      const summary = compactState(state, options);
+      metrics.compact_chars = JSON.stringify(summary).length;
+      metrics.duration_ms = Date.now() - started;
+      return {
+        ok: false,
+        verified: false,
+        outcome: "failed",
+        completed: metrics.actions,
+        reason: check.reason,
+        state,
+        summary,
+        metrics,
+      };
+    }
+    verified = true;
+  }
+  const summary = compactState(state, options);
+  metrics.compact_chars = JSON.stringify(summary).length;
+  metrics.duration_ms = Date.now() - started;
+  return {
+    ok: true,
+    verified,
+    outcome: verified ? "verified" : "visual-review-required",
+    completed: metrics.actions,
+    payload_chars: text.length,
+    state,
+    summary,
+    metrics,
+  };
+}
+
+/**
+ * Send Unicode text through a caller-supplied, already verified local clipboard
+ * bridge and pay for one terminal state capture. Clipboard read/restore callbacks
+ * keep pre-existing clipboard contents outside model-visible output.
+ */
+export async function runRemoteUnicodeText(sky, observation, text, options = {}) {
+  validateObservation(observation);
+  if (!sky || typeof sky.press_key !== "function" || typeof sky.get_window_state !== "function") {
+    throw new Error("Remote Unicode text requires press_key and get_window_state");
+  }
+  if (options.transactionClass !== "local-reversible" || !TRANSACTION_RISKS.has(options.risk ?? "reversible")) {
+    throw new Error("Remote Unicode text is limited to low-risk reversible work");
+  }
+  if (options.stabilityConfirmed !== true || options.focusVerified !== true || options.confirmationBoundary !== false) {
+    throw new Error("Remote Unicode text requires current focus/stability proof and confirmationBoundary: false");
+  }
+  if (options.clearExisting === true && options.mutationAuthorized !== true) {
+    throw new Error("Replacing existing remote text requires mutationAuthorized: true");
+  }
+  if (typeof text !== "string" || text.length === 0 || text.length > (options.maxTextChars ?? 16_384)) {
+    throw new Error("Remote Unicode text must be a non-empty bounded string");
+  }
+  assertRemoteDeviceIdIsNotPayload(text, options);
+  if (options.visualVerificationRequired === false && options.finalExpect == null) {
+    throw new Error("Remote Unicode text requires terminal visual verification or finalExpect");
+  }
+  const clipboard = options.clipboard;
+  if (!clipboard || typeof clipboard.write !== "function" || options.transportVerified !== true) {
+    throw new Error("Remote Unicode text requires a verified clipboard.write bridge and transportVerified: true");
+  }
+  const shot = topScreenshot(observation);
+  if (!shot?.id) throw new Error("Remote Unicode text requires one current full screenshot");
+
+  const started = Date.now();
+  let state = observation;
+  let clipboardSnapshot;
+  let clipboardRestored = typeof clipboard.restore !== "function";
+  const metrics = {
+    actions: 0, observations: 0, sky_calls: 0, duration_ms: 0,
+    observation_chars: 0, compact_chars: 0, screenshot_regions: 0,
+    saved_observations: Math.max(1, text.length - 1),
+  };
+  const restore = async () => {
+    if (typeof clipboard.restore === "function" && !clipboardRestored) {
+      await clipboard.restore(clipboardSnapshot);
+      clipboardRestored = true;
+    }
+  };
+
+  try {
+    if (typeof clipboard.read === "function") clipboardSnapshot = await clipboard.read();
+    if (options.beforeBurst) await options.beforeBurst(state);
+    if (options.focusPoint) {
+      if (typeof sky.click !== "function") throw new Error("focusPoint requires click");
+      const point = screenshotPoint(state, options.focusPoint.x, options.focusPoint.y, options.focusPoint.screenshotId);
+      await sky.click({ window: state.window, ...point });
+      metrics.actions += 1;
+      metrics.sky_calls += 1;
+    }
+    if (options.clearExisting === true) {
+      await sky.press_key({ window: state.window, key: options.selectAllKey ?? "Control_L+a" });
+      await sky.press_key({ window: state.window, key: "Backspace" });
+      metrics.actions += 2;
+      metrics.sky_calls += 2;
+    }
+    const transportResult = await clipboard.write(text, { window: state.window });
+    metrics.actions += Number(transportResult?.actions ?? 1);
+    metrics.sky_calls += Number(transportResult?.sky_calls ?? 0);
+    await sky.press_key({ window: state.window, key: options.pasteKey ?? "Control_L+v" });
+    metrics.actions += 1;
+    metrics.sky_calls += 1;
+    if (options.submitKey) {
+      await sky.press_key({ window: state.window, key: options.submitKey });
+      metrics.actions += 1;
+      metrics.sky_calls += 1;
+    }
+    await restore();
+  } catch (error) {
+    await restore().catch(() => {});
+    metrics.duration_ms = Date.now() - started;
+    return {
+      ok: false, verified: false, outcome: "unknown", completed: metrics.actions,
+      reason: String(error), state, summary: compactState(state, options), metrics,
+      clipboard_restored: clipboardRestored,
+    };
+  }
+
+  try {
+    state = await sky.get_window_state({
+      window: state.window,
+      include_screenshot: true,
+      include_text: options.include_text ?? (options.finalExpect != null),
+    });
+    validateObservation(state);
+    metrics.observations = 1;
+    metrics.sky_calls += 1;
+    metrics.observation_chars += observationChars(state);
+    metrics.screenshot_regions += state.screenshots?.length ?? 0;
+    if (options.observationGuard) await options.observationGuard(state);
+  } catch (error) {
+    metrics.duration_ms = Date.now() - started;
+    return {
+      ok: false, verified: false, outcome: "unknown", completed: metrics.actions,
+      reason: `terminal refresh failed: ${error}`, state, summary: compactState(state, options), metrics,
+      clipboard_restored: clipboardRestored,
+    };
+  }
+
+  if ((state.screenshots?.length ?? 0) === 0) {
+    metrics.duration_ms = Date.now() - started;
+    return {
+      ok: false, verified: false, outcome: "failed", completed: metrics.actions,
+      reason: "terminal screenshot was not returned", state, summary: compactState(state, options), metrics,
+      clipboard_restored: clipboardRestored,
+    };
+  }
+  const check = options.finalExpect == null ? { ok: true, visual: true } : expectationResult(state, options.finalExpect);
+  const verified = options.finalExpect != null && check.ok;
+  const summary = compactState(state, options);
+  metrics.compact_chars = JSON.stringify(summary).length;
+  metrics.duration_ms = Date.now() - started;
+  return {
+    ok: check.ok,
+    verified,
+    outcome: check.ok ? (verified ? "verified" : "visual-review-required") : "failed",
+    reason: check.reason,
+    completed: metrics.actions,
+    payload_chars: text.length,
+    state,
+    summary,
+    metrics,
+    clipboard_restored: clipboardRestored,
+    transport: "verified-clipboard",
   };
 }
 
@@ -2237,16 +3097,49 @@ export async function selfTest() {
   let shotWidth = 1280;
   const remoteDeviceId = "123-456-789";
   const window = { id: 1, app: "demo", title: "Demo" };
+  const codexWindow = { id: 2, app: "Codex", title: "computer-use-studio-pro - Codex" };
   const mockSky = {
     async click(input) { calls.push(["click", input]); },
     async press_key(input) { calls.push(["press_key", input]); },
     async type_text(input) { value = input.text; calls.push(["type_text", input]); },
     async set_value(input) { value = input.value; calls.push(["set_value", input]); },
+    async activate_window(input) { calls.push(["activate_window", input]); },
     async get_window_state(input) {
       calls.push(["get_window_state", input]);
       return { window, accessibility: { focused_element: "13 Edit", document_text: `${value} Device ${remoteDeviceId}`, tree: `13 Edit ${value} Device ${remoteDeviceId}` }, screenshots: input.include_screenshot ? [{ id: `shot-${shotWidth}`, width: shotWidth, height: 720, originX: 0, originY: 0, zIndex: 1 }] : [] };
     },
   };
+  const presentationCalls = [];
+  const presentationSky = {
+    async list_windows() { presentationCalls.push("list_windows"); return [window, codexWindow]; },
+    async activate_window({ window: target }) { presentationCalls.push(`activate:${target.id}`); },
+  };
+  const codexPresentation = await presentUserHandoffSurface(presentationSky, { surface: "codex" });
+  const remotePresentation = await presentUserHandoffSurface(presentationSky, { surface: "remote-client", window });
+  if (codexPresentation.presented_window.id !== codexWindow.id
+      || codexPresentation.metrics.sky_calls !== 2 || codexPresentation.metrics.get_window_state_calls !== 0
+      || remotePresentation.metrics.sky_calls !== 1
+      || presentationCalls.join(",") !== "list_windows,activate:2,activate:1") {
+    throw new Error("foreground handoff presentation self-test failed");
+  }
+  const capsKeys = remoteCanvasTextActions("Aa", { capsLock: true }).map((action) => action.args.key);
+  const clipboardSelection = selectRemoteTextTransport("OpenAI-Aa1", {
+    transportVerified: true,
+    clipboard: { async write() {}, estimatedSkyCalls: 0 },
+  });
+  const keySelection = selectRemoteTextTransport("A", {});
+  const unknownClipboardCostSelection = selectRemoteTextTransport("OpenAI", {
+    transportVerified: true, clipboard: { async write() {} },
+  });
+  const exactCaseState = { window, accessibility: { document_text: "OpenAI" }, screenshots: [] };
+  if (capsKeys.join(",") !== "a,Shift_L+a"
+      || clipboardSelection.transport !== "verified-clipboard" || clipboardSelection.reason !== "fewer-sky-calls"
+      || keySelection.transport !== "key-events" || unknownClipboardCostSelection.transport !== "key-events"
+      || !expectationResult(exactCaseState, { documentEquals: "OpenAI" }).ok
+      || expectationResult(exactCaseState, { documentEquals: "openai" }).ok
+      || !expectationResult(exactCaseState, { documentEquals: "openai", caseSensitive: false }).ok) {
+    throw new Error("case-sensitive expectation or zero-call remote text routing self-test failed");
+  }
   const observation = { window, accessibility: { tree: "13 Edit", focused_element: "13 Edit" }, screenshots: [] };
   const toDeskSignals = createRemoteClientSignalAdapter("ToDesk", { remoteDeviceId });
   const toDeskInitial = {
@@ -2286,6 +3179,63 @@ export async function selfTest() {
       || !sunloginSignals.deviceVerifier(sunloginInitial, remoteDeviceId)) {
     throw new Error("Sunlogin signal adapter initial binding self-test failed");
   }
+  const collapsedSession = createPersistentWindowSession({
+    async get_window_state(input) {
+      return {
+        window,
+        accessibility: { focused_element: "", document_text: `向日葵识别码：${remoteDeviceId}`, tree: `向日葵识别码：${remoteDeviceId}` },
+        screenshots: input.include_screenshot ? [{ id: "collapsed", width: 1200, height: 72, zIndex: 1 }] : [],
+      };
+    },
+  }, {
+    mode: "remote-fast-fix",
+    window,
+    targetApp: "demo",
+    targetTitleIncludes: "Demo",
+    remoteDeviceId,
+    authorizationGranted: true,
+    taskScope: "repair",
+    success: "done",
+  });
+  let collapsedCandidateRejected = false;
+  try { await collapsedSession.initialObserve(); } catch (error) {
+    collapsedCandidateRejected = error?.code === "REMOTE_CLIENT_CANVAS_COLLAPSED";
+  }
+  if (!collapsedCandidateRejected) throw new Error("collapsed remote client candidate self-test failed");
+  let sessionCanvasReads = 0;
+  const sessionCanvasKeys = [];
+  const sessionCanvas = createPersistentWindowSession({
+    async press_key(input) { sessionCanvasKeys.push(input.key); },
+    async get_window_state(input) {
+      sessionCanvasReads += 1;
+      return {
+        window,
+        accessibility: { focused_element: "", document_text: `向日葵识别码：${remoteDeviceId}`, tree: `向日葵识别码：${remoteDeviceId}` },
+        screenshots: input.include_screenshot ? [{ id: `session-canvas-${sessionCanvasReads}`, width: 1280, height: 720, zIndex: 1 }] : [],
+      };
+    },
+  }, {
+    mode: "remote-fast-fix",
+    window,
+    targetApp: "demo",
+    targetTitleIncludes: "Demo",
+    remoteDeviceId,
+    authorizationGranted: true,
+    taskScope: "repair",
+    success: "done",
+  });
+  await sessionCanvas.initialObserve();
+  const sessionCanvasResult = await sessionCanvas.remoteCanvasText("abc", {
+    risk: "low",
+    stabilityConfirmed: true,
+    focusVerified: true,
+    confirmationBoundary: false,
+  });
+  if (!sessionCanvasResult.ok || sessionCanvasResult.metrics.observations !== 1
+      || sessionCanvasReads !== 2 || sessionCanvasKeys.join("") !== "abc"
+      || sessionCanvasResult.transport !== "key-events" || sessionCanvasResult.authorization_check_mode !== "session-lease") {
+    throw new Error("persistent remoteCanvasText session self-test failed");
+  }
   const result = await fillEditable(mockSky, observation, { element_index: 13, value: "hello", strategy: "keyboard", risk: "reversible" });
   if (!result.ok || result.completed !== 3 || result.metrics.sky_calls !== 6 || !result.summary.document_text.includes("hello")) {
     throw new Error("verified transaction self-test failed");
@@ -2324,6 +3274,58 @@ export async function selfTest() {
   if (!keyboardBurst.ok || !keyboardBurst.verified || keyboardBurst.metrics.observations !== 1
       || keyboardBurst.metrics.saved_observations !== 1 || burstObservations !== 1) {
     throw new Error("single-refresh keyboard burst self-test failed");
+  }
+  let canvasStateReads = 0;
+  const canvasKeys = [];
+  const canvasSky = {
+    async click(input) { calls.push(["canvas_click", input]); },
+    async press_key(input) { canvasKeys.push(input.key); },
+    async get_window_state(input) {
+      canvasStateReads += 1;
+      return {
+        window,
+        accessibility: input.include_text ? { focused_element: "", document_text: "", tree: "" } : null,
+        screenshots: input.include_screenshot ? [{ id: "canvas-terminal", width: 1280, height: 720, zIndex: 1 }] : [],
+      };
+    },
+  };
+  const canvasObservation = {
+    window,
+    accessibility: null,
+    screenshots: [{ id: "canvas-current", width: 1280, height: 720, zIndex: 1 }],
+  };
+  const canvasBurst = await runRemoteCanvasTextBurst(canvasSky, canvasObservation, "Ab-1", {
+    transactionClass: "local-reversible",
+    risk: "low",
+    stabilityConfirmed: true,
+    focusVerified: true,
+    confirmationBoundary: false,
+    clearExisting: true,
+    mutationAuthorized: true,
+    focusPoint: { x: 50, y: 40 },
+    submitKey: "Return",
+    remoteDeviceId,
+  });
+  if (!canvasBurst.ok || canvasBurst.outcome !== "visual-review-required"
+      || canvasBurst.metrics.observations !== 1 || canvasBurst.metrics.screenshot_regions !== 1
+      || canvasStateReads !== 1 || canvasKeys.join(",") !== "Control_L+a,Backspace,Shift_L+a,b,minus,1,Return") {
+    throw new Error("single-terminal-screenshot remote canvas burst self-test failed");
+  }
+  let deviceIdPayloadRejected = false;
+  try {
+    await runRemoteCanvasTextBurst(canvasSky, canvasObservation, remoteDeviceId, {
+      transactionClass: "local-reversible",
+      risk: "low",
+      stabilityConfirmed: true,
+      focusVerified: true,
+      confirmationBoundary: false,
+      remoteDeviceId,
+    });
+  } catch (error) {
+    deviceIdPayloadRejected = error?.code === "REMOTE_DEVICE_ID_PAYLOAD_BLOCKED";
+  }
+  if (!deviceIdPayloadRejected || canvasStateReads !== 1) {
+    throw new Error("remote device ID payload guard self-test failed");
   }
   let nonEditableFocusRejected = false;
   try {
@@ -2598,6 +3600,20 @@ export async function selfTest() {
       || noScreenshotState.screenshots.length !== 0) {
     throw new Error("token-view compaction self-test failed");
   }
+  const budgetState = {
+    window: { id: 1, app: "demo", title: "A window title long enough to matter for the envelope" },
+    accessibility: {
+      focused_element: "13 Edit",
+      selected_text: "selected text to trim",
+      document_text: "x".repeat(2000),
+      tree: Array.from({ length: 40 }, (_, index) => `${index} ${"node-text ".repeat(20)}`).join("\n"),
+    },
+    screenshots: [{ id: "s1", width: 1280, height: 720, originX: 0, originY: 0, zIndex: 1 }],
+  };
+  const budgeted = compactState(budgetState, { maxChars: 900 });
+  if (JSON.stringify(budgeted).length > 900) {
+    throw new Error(`compactState exceeded its global budget: ${JSON.stringify(budgeted).length}`);
+  }
   let rejected = false;
   try { await runVerifiedTransaction(mockSky, observation, [{ method: "click", args: { element_index: 13 }, expect: { includes: "Edit" } }], { transactionClass: "local-reversible", risk: "consequential" }); } catch { rejected = true; }
   if (!rejected) throw new Error("consequential transaction was not rejected");
@@ -2612,8 +3628,13 @@ export async function selfTest() {
     taskScope: "repair demo",
     success: { includes: "done" },
   });
+  const persistentInitialCallStart = calls.length;
   const initial = await persistent.initialObserve();
-  if (initial.reused || initial.metrics.screenshot_regions !== 1 || initial.layout_epoch !== 0) throw new Error("persistent session missed initial full observation");
+  const persistentInitialCalls = calls.slice(persistentInitialCallStart).map(([name]) => name);
+  if (initial.reused || initial.metrics.screenshot_regions !== 1 || initial.layout_epoch !== 0
+      || persistentInitialCalls[0] !== "activate_window" || persistentInitialCalls[1] !== "get_window_state") {
+    throw new Error("persistent session missed remote foreground activation or initial full observation");
+  }
   let stateCallsBefore = calls.filter(([name]) => name === "get_window_state").length;
   const routine = await persistent.observe("routine");
   let stateCallDelta = calls.filter(([name]) => name === "get_window_state").length - stateCallsBefore;
@@ -2746,9 +3767,11 @@ export async function selfTest() {
   const leaseChecks = { authorization: 0, connection: 0, device: 0, stop: 0 };
   let leaseChecksAtInput = null;
   const leaseChecksAtInputs = [];
+  const leaseActivations = [];
   const leasedSky = {
     ...mockSky,
     async list_windows() { return [window]; },
+    async activate_window({ window: target }) { leaseActivations.push(target.id); },
     async type_text(input) {
       leaseChecksAtInput = { ...leaseChecks };
       leaseChecksAtInputs.push({ ...leaseChecks });
@@ -2773,15 +3796,22 @@ export async function selfTest() {
   if (JSON.stringify(leaseChecks) !== beforeCachedGates) {
     throw new Error("cached input gates called remote verifiers per input");
   }
-  const pausedForUser = leased.pauseForUserInput("user-types-password");
-  if (pausedForUser.authorization_status !== "active" || pausedForUser.control_owner !== "user") {
+  const pausedForUser = await leased.pauseForUserInput("host-confirms-in-codex", {
+    surface: "codex",
+    instruction: "请在 Codex 中确认后继续",
+    presentation: { window: codexWindow },
+  });
+  if (pausedForUser.authorization_status !== "active" || pausedForUser.control_owner !== "user"
+      || pausedForUser.last_control_handoff?.surface !== "codex"
+      || pausedForUser.host_codex_window?.id !== codexWindow.id) {
     throw new Error("user credential handoff revoked the connected authorization lease");
   }
   let agentInputDuringHandoffRejected = false;
   try { leased.assertInputAllowed(); } catch { agentInputDuringHandoffRejected = true; }
   if (!agentInputDuringHandoffRejected) throw new Error("agent input remained active during user handoff");
   const resumedControl = await leased.resumeAgentControl({ screenshotOnSemanticChange: false });
-  if (resumedControl.control_owner !== "agent" || resumedControl.authorization_status !== "active" || leaseChecks.authorization !== 1) {
+  if (resumedControl.control_owner !== "agent" || resumedControl.authorization_status !== "active" || leaseChecks.authorization !== 1
+      || leaseActivations.slice(-2).join(",") !== `${codexWindow.id},${window.id}`) {
     throw new Error("user handoff return re-ran authorization or failed to resume agent control");
   }
   const checksBeforeInput = { ...leaseChecks };
@@ -2816,7 +3846,7 @@ export async function selfTest() {
   const checksBeforeFastHandoff = { ...leaseChecks };
   let coordinateHandoffRejected = false;
   try {
-    leased.pauseForUserInput("bad-coordinate-plan", {
+    await leased.pauseForUserInput("bad-coordinate-plan", {
       returnExpect: { includes: "user-complete" },
       steps: [{ method: "click", args: { x: 1, y: 1, screenshotId: "old" }, expect: { includes: "done" } }],
     });
@@ -2824,7 +3854,7 @@ export async function selfTest() {
   if (!coordinateHandoffRejected || leased.snapshot().control_owner !== "agent") {
     throw new Error("fast handoff accepted a pre-handoff coordinate or changed ownership after validation failure");
   }
-  const fastPaused = leased.pauseForUserInput("user-types-private-value", {
+  const fastPaused = await leased.pauseForUserInput("user-types-private-value", {
     returnExpect: { includes: "user-complete" },
     settleMs: 0,
     steps: [
@@ -2987,6 +4017,119 @@ export async function selfTest() {
   const strictReady = await launchAndAwaitReady(readySky, "demo", { expect: { includes: "Ready" }, attempts: 4, intervalMs: 0, stablePasses: 2, requireFocusedElement: true, signature: (state) => state.accessibility.document_text });
   if (!strictReady.ok || strictReady.stable_passes !== 3 || strictReady.attempts !== 5) {
     throw new Error("strict post-activation readiness self-test failed");
+  }
+
+  const capabilities = inspectSkyCapabilities({ get_window_state() {}, list_windows() {}, set_value() {} });
+  if (capabilities.routes.window_lifecycle !== "list_windows" || capabilities.routes.editable_text !== "set_value") {
+    throw new Error("zero-call capability negotiation self-test failed");
+  }
+  const emptyCapabilities = inspectSkyCapabilities({});
+  if (emptyCapabilities.routes.window_lifecycle !== null || emptyCapabilities.routes.editable_text !== null
+      || emptyCapabilities.routes.semantic_actions !== null || emptyCapabilities.routes.persistent_fast_path !== false) {
+    throw new Error("missing capability routing self-test failed");
+  }
+  for (const client of ["RustDesk", "AnyDesk", "TeamViewer"]) {
+    const signals = createRemoteClientSignalAdapter(client, { remoteDeviceId });
+    const clientState = {
+      window,
+      accessibility: { document_text: `${client} ID: ${remoteDeviceId}`, tree: `${client} ID: ${remoteDeviceId}` },
+      screenshots: [],
+    };
+    if (!signals.connectionVerifier(clientState) || !signals.deviceVerifier(clientState, remoteDeviceId)) {
+      throw new Error(`${client} signal profile self-test failed`);
+    }
+  }
+
+  let reuseStateCalls = 0;
+  const reusableObservation = {
+    window,
+    accessibility: { focused_element: "13 Edit", document_text: `Ready Device ID: ${remoteDeviceId}`, tree: `13 Edit Ready Device ID: ${remoteDeviceId}` },
+    screenshots: [{ id: "reusable-shot", width: 1280, height: 720, zIndex: 1 }],
+  };
+  const checkpointEvents = [];
+  const reuseSession = createPersistentWindowSession({
+    async get_window_state() { reuseStateCalls += 1; return reusableObservation; },
+  }, {
+    mode: "remote-fast-fix", window, observation: reusableObservation,
+    targetApp: "demo", targetTitleIncludes: "Demo", remoteDeviceId,
+    authorizationGranted: true, taskScope: "repair", success: { includes: "Ready" },
+    checkpointStore: {
+      async record(value) { checkpointEvents.push(value.event); },
+      async flush() {},
+    },
+  });
+  const reusedInitial = await reuseSession.initialObserve();
+  const reusedTerminal = await reuseSession.verifySuccess();
+  await reuseSession.flushCheckpoint();
+  if (reuseStateCalls !== 0 || !reusedInitial.reused_initial_observation
+      || !reusedTerminal.reused_terminal_observation || reusedTerminal.metrics?.sky_calls !== 0
+      || !checkpointEvents.some((event) => event === "verified:terminal-success")) {
+    throw new Error("initial/terminal observation reuse or checkpoint self-test failed");
+  }
+
+  let unicodeValue = "";
+  let restoredClipboard = false;
+  let unicodeStateCalls = 0;
+  const unicodeKeys = [];
+  const unicodeSky = {
+    async press_key(input) { unicodeKeys.push(input.key); },
+    async get_window_state(input) {
+      unicodeStateCalls += 1;
+      return {
+        window,
+        accessibility: { focused_element: "13 Edit", document_text: unicodeValue, tree: `13 Edit ${unicodeValue}` },
+        screenshots: input.include_screenshot ? [{ id: "unicode-terminal", width: 1280, height: 720, zIndex: 1 }] : [],
+      };
+    },
+  };
+  const unicodeResult = await runRemoteUnicodeText(unicodeSky, reusableObservation, "中文输入", {
+    transactionClass: "local-reversible", risk: "low", stabilityConfirmed: true,
+    focusVerified: true, confirmationBoundary: false, transportVerified: true,
+    finalExpect: { includes: "中文输入" }, remoteDeviceId,
+    clipboard: {
+      async read() { return "previous"; },
+      async write(valueToWrite) { unicodeValue = valueToWrite; return { actions: 0, sky_calls: 0 }; },
+      async restore(valueToRestore) { restoredClipboard = valueToRestore === "previous"; },
+    },
+  });
+  if (!unicodeResult.ok || !unicodeResult.verified || unicodeStateCalls !== 1
+      || unicodeKeys.join(",") !== "Control_L+v" || unicodeResult.metrics?.sky_calls !== 2
+      || !restoredClipboard || !unicodeResult.clipboard_restored) {
+    throw new Error("single-capture Unicode clipboard transport self-test failed");
+  }
+  let adaptiveValue = "";
+  const adaptiveKeys = [];
+  const adaptiveSky = {
+    async press_key(input) { adaptiveKeys.push(input.key); },
+    async get_window_state(input) {
+      const text = `${adaptiveValue} Device ID: ${remoteDeviceId}`;
+      return {
+        window,
+        accessibility: { focused_element: "13 Edit", document_text: text, tree: `13 Edit ${text}` },
+        screenshots: input.include_screenshot ? [{ id: "adaptive-terminal", width: 1280, height: 720, zIndex: 1 }] : [],
+      };
+    },
+  };
+  const adaptiveSession = createPersistentWindowSession(adaptiveSky, {
+    mode: "remote-fast-fix", window, targetApp: "demo", targetTitleIncludes: "Demo",
+    remoteDeviceId, authorizationGranted: true, taskScope: "adaptive text", success: { includes: "OpenAI-Aa1" },
+  });
+  await adaptiveSession.initialObserve();
+  const adaptiveText = await adaptiveSession.remoteText("OpenAI-Aa1", {
+    risk: "low", stabilityConfirmed: true, focusVerified: true, confirmationBoundary: false,
+    transportVerified: true, finalExpect: { includes: "OpenAI-Aa1" },
+    clipboard: {
+      estimatedSkyCalls: 0,
+      async read() { return "previous"; },
+      async write(next) { adaptiveValue = next; return { actions: 1, sky_calls: 0 }; },
+      async restore() {},
+    },
+  });
+  if (!adaptiveText.ok || !adaptiveText.verified || adaptiveText.transport !== "verified-clipboard"
+      || adaptiveText.transport_selection_calls !== 0 || adaptiveText.metrics.sky_calls !== 2
+      || adaptiveText.transport_selection.alternative_sky_calls <= adaptiveText.metrics.sky_calls
+      || adaptiveKeys.join(",") !== "Control_L+v") {
+    throw new Error("adaptive lower-call remote text transport self-test failed");
   }
   return "self-test: ok";
 }

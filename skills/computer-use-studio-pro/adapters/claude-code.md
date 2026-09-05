@@ -7,3 +7,6 @@ First inspect the tools actually configured for this Claude Code session. Claude
 - Do not invoke `adapters/codex/scripts/sky_fast_path.mjs`, `sky`, or any Codex-specific API.
 - If the task needs a GUI action and no compatible MCP/browser/desktop tool is available, stop and request a tool or user takeover.
 - Keep host confirmation rules for consequential actions even if a local helper reports a successful state.
+- Build a tool-name inventory from the already available session metadata and pass it to `scripts/capability_router.py`; do not issue probe actions. Cache the returned connector/file, DOM, accessibility, lifecycle, vision, and input routes for the task.
+- Reuse the latest action result for terminal verification when it is current and already contains the required evidence. Window-only waits should use the host's lightweight window/process enumeration rather than a screenshot.
+- Use `scripts/operator_state.py` plus milestone-only events for resumable work; ordinary actions stay off the disk-write path.

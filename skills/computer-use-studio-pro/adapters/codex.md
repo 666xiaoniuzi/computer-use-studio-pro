@@ -17,12 +17,17 @@ if (!globalThis.cusproFastPath) {
   const modulePath = path.join(homeDir, ".codex", "skills", "computer-use-studio-pro", "adapters", "codex", "scripts", "sky_fast_path.mjs");
   globalThis.cusproFastPath = await import(pathToFileURL(modulePath).href);
 }
+if (!globalThis.cusproCapabilities) {
+  globalThis.cusproCapabilities = globalThis.cusproFastPath.inspectSkyCapabilities(globalThis.sky);
+}
 if (!globalThis.cusproUsage) {
   globalThis.cusproUsage = globalThis.cusproFastPath.createTaskUsageMeter();
 }
 ```
 
-Use the actual Skill root when installation differs. Reuse both globals for the whole task. When a task is classified as `remote-fast-fix`, call `globalThis.cusproUsage.startTask()` exactly once as soon as its compact task contract is accepted and before the first remote observation or input; this resets prior counters and establishes the wall-clock start.
+Use the actual Skill root when installation differs. Reuse these globals for the whole task. Capability negotiation is synchronous and adds no Computer Use call. When a task is classified as `remote-fast-fix`, call `globalThis.cusproUsage.startTask()` exactly once as soon as its compact task contract is accepted and before the first remote observation or input; this resets prior counters and establishes the wall-clock start.
+
+For long or interruption-prone work, import adjacent `runtime_checkpoint.mjs`, open one store with a task ID, and pass it as `checkpointStore`. Milestones queue compact local writes without awaiting them in the GUI hot path. Flush at customer pause/recovery/close; after a process restart load the checkpoint, remap the window, and obtain a fresh connected-session authorization before continuing.
 
 ## Compact output discipline
 
@@ -47,31 +52,64 @@ Prefer the matching helper, persistent session, signal adapter, and `tokenView`;
 
 Import `playbook_cache.mjs` beside `sky_fast_path.mjs` once per remote runtime, open `cusproPlaybooks`, and pass it plus the normalized problem/OS/app/version/client/surface context and compact semantic labels to `createPersistentWindowSession`. `initialObserve()` returns the best match in its existing cell; `verifySuccess()` automatically promotes verified semantic steps in its closeout cell.
 
-Create one `createRemoteClientSignalAdapter(clientName, { remoteDeviceId })` and one `createPersistentWindowSession` for the current ToDesk/Sunlogin window. Provide target app/title, exact device ID, task goal, success condition, authorization signal, playbook cache/context, and the adapter's connection/device/stop verifiers. `operationScope` defaults to `entire-bound-device`.
+Create one `createRemoteClientSignalAdapter(clientName, { remoteDeviceId })` and one `createPersistentWindowSession` for the current ToDesk, Sunlogin, RustDesk, AnyDesk, or TeamViewer window. Provide target app/title, exact device ID, task goal, success condition, authorization signal, playbook cache/context, optional checkpoint store, and the adapter's connection/device/stop verifiers. `operationScope` defaults to `entire-bound-device`.
 
-Call `initialObserve()` once. Every input reads the cached gate; live verifiers run on accepted observations/events/reconnect. Wire stop, disconnect, and same-device reconnect to their session methods.
+Call `initialObserve()` once. In remote mode it foregrounds the bound ToDesk/Sunlogin-equivalent window before the first observation, so the host user does not need to expose the remote-client window manually. Every input reads the cached gate; live verifiers run on accepted observations/events/reconnect. Wire stop, disconnect, and same-device reconnect to their session methods.
 
-Remote observation/action helpers default to one text+screenshot call; pixels stay in runtime. Pass `include_screenshot:false` (legacy alias accepted) for bounded semantic checks; customer fast return already does. Mark opaque-canvas transitions and remap stale leases.
-
-Before private input, prepare the expected return state and any deterministic reversible continuation. An approved button/hotkey/client bridge signals completion without a model turn; the same event callback runs:
+Remote work takes one complete initial screenshot; pixels stay in runtime. The dominant delay is the state-capture call. Remove redundant calls: use `list_windows` for lifecycle, screenshot-free compact state for bounded semantic checks, and `session.remoteCanvasText(...)` for stable opaque-canvas ASCII input. That helper uses cached session gates, key-event forwarding, and exactly one terminal screenshot; it never uses the device ID as task text. Mark opaque-canvas transitions and remap stale leases.
 
 ```js
-session.pauseForUserInput("private-input", { returnExpect, steps, settleMs: 350 });
+globalThis.last = await session.remoteCanvasText("https://example.invalid", {
+  focusPoint: { x: 420, y: 64 }, // coordinates from the current full screenshot
+  focusVerified: true,
+  stabilityConfirmed: true,
+  confirmationBoundary: false,
+  clearExisting: true,
+  mutationAuthorized: true,
+  submitKey: "Return",
+});
+globalThis.cusproUsage.view(globalThis.last, { maxChars: 500 });
+```
+
+Use this for ordinary visible search/address/edit fields. For Unicode text, use `session.remoteUnicodeText(...)` with a verified local clipboard bridge, clipboard save/restore callbacks, and one terminal screenshot. Do not send raw `type_text` through an opaque remote canvas based only on a local focus guess.
+
+When the target window was selected from an already-current full observation, pass it as `observation`; `initialObserve()` reuses it and saves one state capture. `verifySuccess()` likewise reuses a fresh action-refresh state that already satisfies the terminal condition and screenshot requirement. Set `forceRefresh: true` only when evidence may have changed outside the session.
+
+Before private input, prepare the expected return state and any deterministic reversible continuation. `pauseForUserInput()` presents the selected surface before ownership changes. The default is the bound remote-client window for password/OTP/UAC entry on the remote computer:
+
+```js
+await session.pauseForUserInput("private-input", {
+  surface: "remote-client",
+  instruction: "请在远程电脑中完成当前私密输入，然后点击已完成",
+  returnExpect,
+  steps,
+  settleMs: 350,
+});
 // Later, from the approved local customer-done event callback:
 session.signalUserInputComplete({ source: "approved-event" });
 globalThis.last = await session.resumeAndContinue();
 globalThis.cusproUsage.view(globalThis.last, { maxChars: 400 });
 ```
 
-The fast path checks the bound window, takes one screenshot-free compact observation, and executes prepared steps only when `returnExpect` matches. It emits no screenshot and saves one model roundtrip on the stable path; mismatch returns compact evidence for diagnosis. `resumeAgentControl()` remains the general visual fallback. Keep full secrets out of model/log output.
+When the host user must click, approve, choose, or type in Codex itself, use a Codex handoff instead. It foregrounds the bound/discovered Codex window before the Agent pauses and records the instruction in the handoff snapshot:
 
-Call `session.verifySuccess()` before completion and require `success_verified=true`. The persistent session automatically distills verified semantic actions and promotes the recipe in that same closeout call; cache persistence adds no model turn. If a matched recipe misses its postcondition, call `session.recordMatchedPlaybookFailure()` and resume ordinary diagnosis. Use `noteAttempt(signature, strategy)` and pivot after the repeated-path guard. Keep raw session state in the kernel and return only `tokenView(...)` plus necessary metrics.
+```js
+globalThis.handoff = await session.pauseForUserInput("host-action-in-codex", {
+  surface: "codex",
+  instruction: "请在 Codex 中点击继续，并在完成后发送“继续”",
+  presentation: globalThis.hostCodexWindow ? { window: globalThis.hostCodexWindow } : {},
+});
+```
+
+The fast path checks and reactivates the bound remote window on return, takes one screenshot-free compact observation, and executes prepared steps only when `returnExpect` matches. It emits no screenshot and saves one model roundtrip on the stable path; mismatch returns compact evidence for diagnosis. `resumeAgentControl()` remains the general visual fallback. Keep full secrets out of model/log output. Foreground presentation uses only `list_windows` plus `activate_window` when discovery is needed, or one `activate_window` with a bound handle; it makes zero `get_window_state` calls.
+
+Call `session.verifySuccess()` before completion and require `success_verified=true`. It reuses the current terminal evidence when eligible, avoiding an extra roughly state-capture-sized delay. The persistent session automatically distills verified semantic actions and promotes the recipe in that same closeout call; cache persistence adds no model turn. If a matched recipe misses its postcondition, call `session.recordMatchedPlaybookFailure()` and resume ordinary diagnosis. Use `noteAttempt(signature, strategy)` and pivot after the repeated-path guard. Keep raw session state in the kernel and return only `tokenView(...)` plus necessary metrics.
 
 For Office bulk text, `scripts/ooxml_text.py` writes and verifies a new copy; inspect it visually when the task requires visual fidelity. Before opening Save As, call `deriveArtifactFileName({ title, task }, { extension: ".docx" })` (or the matching extension), use clipboard paste when remote Unicode direct typing is unreliable, then verify the exact desktop filename. A generic application default is a failed filename postcondition, even when document contents are correct.
 
 ## Remote completion handback, usage, and duration
 
-For remote work, finish cleanup, end Agent input, revoke/close the task lease, then minimize or close the bound remote-client window and reveal the host desktop. Reuse the latest valid window lease and a screenshot-free lifecycle/window check; do not add a visual-model turn merely for handback.
+For remote work, finish cleanup, end Agent input, revoke/close the task lease, then minimize or close the bound remote-client window and call `await session.presentUserSurface("codex")` before emitting the completion response. This brings the Codex task window to the foreground so the host user sees either the requested prompt or the final result. Reuse a cached `hostCodexWindow` when available; discovery uses one cheap window list and is cached by the session. Do not add a state capture or visual-model turn merely for handback.
 
 After host handback, call `cusproUsage.report(hostUsage)` exactly once and reuse that returned object in the remote completion response. Pass host usage when Codex exposes `input_tokens`, `output_tokens`, cached-input Tokens, or a total; the report labels those as `host-exact`. If the host omits usage, call `cusproUsage.report()` and label `estimated_compact_view_tokens`, `compact_chars`, `tool_calls`, and `screenshots` as a compact-view estimate rather than an API billing total. Always show `started_at`, `finished_at`, `duration_ms`, and `duration_human`; duration is wall-clock time from `startTask()` through verification, cleanup, and visible host handback, including customer takeover and wait/reconnect time.
 

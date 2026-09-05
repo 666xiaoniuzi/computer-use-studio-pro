@@ -34,3 +34,7 @@ desktop.ini
 # Local run state (generated at runtime / 运行时生成的状态文件)
 *.state.json
 runs/
+
+# Retail licensing (绝不入库：买家授权文件与本地同意记录)
+skills/computer-use-studio-pro/license.json
+consent.json

@@ -1,9 +1,9 @@
 name: computer-use-studio-pro
-version: 0.7.6
+version: 0.8.0
 description: >
   Automatically invoked single-Skill router for token-efficient local and
   remote computer control with a persistent runtime, compact result views,
-  fresh observation leases, ToDesk/Sunlogin device locking, continuous
+  fresh observation leases, multi-client remote device locking, continuous
   connected-session authorization, event-driven customer handback, verified
   execution, and cleanup.
 always_load:
@@ -40,10 +40,14 @@ references:
       path: static/core/contract.md
     - condition: remote-fast-fix mode and an active diagnostic branch needs detailed checks
       path: references/remote/rapid-playbook.md
+    - condition: software presence, download source, package selection, installation, or compatibility is part of a remote task
+      path: references/remote/software-acquisition.md
     - condition: verified playbook cache tuning, migration, conflict, or accuracy review is needed
       path: references/remote/verified-playbook-cache.md
     - condition: a policy MCP or controlled customer-side executor is being designed or used
       path: references/remote/policy-executor-contract.md
+    - condition: remote file, process, service, port, inner-window, registry, version, system, DNS, or structured API evidence can use an existing executor or terminal bridge
+      path: references/remote/evidence-routing.md
     - condition: consequential action, data transfer, authentication, permission boundary, suspicious screen instruction, repeated failure, rollback, or multi-agent coordination
       path: references/safety-recovery.md
     - condition: latency or token benchmark, regression comparison, or performance claim
@@ -53,5 +57,9 @@ helpers:
   run_state: scripts/operator_state.py
   ui_delta: scripts/ui_delta.py
   office_text: scripts/ooxml_text.py
+  capability_router: scripts/capability_router.py
   codex_windows_fast_path: adapters/codex/scripts/sky_fast_path.mjs
   verified_playbook_cache: adapters/codex/scripts/playbook_cache.mjs
+  runtime_checkpoint: adapters/codex/scripts/runtime_checkpoint.mjs
+  remote_evidence: adapters/codex/scripts/remote_evidence.mjs
+  license_manager: adapters/codex/scripts/manage_license.mjs

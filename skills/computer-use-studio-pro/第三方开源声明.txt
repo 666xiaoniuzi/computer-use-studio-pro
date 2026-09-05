@@ -1,0 +1,21 @@
+Computer Use Studio Pro 第三方开源组件与运行环境声明
+========================================================
+
+本产品运行时仅依赖以下组件：
+
+1. Node.js 运行时（https://nodejs.org/，MIT License）
+   —— 运行产品的 .mjs 脚本所必需，请用户自行从官网安装。
+
+2. Python 3 标准库（https://www.python.org/，PSF License）
+   —— 部分辅助脚本使用，仅调用标准库，不含第三方 Python 包。
+
+3. Windows 自带系统命令（reg、powershell）
+   —— 用于生成本机匿名设备标识（机器码），不涉及任何第三方软件。
+
+本产品的 .mjs 脚本仅使用 Node.js 内置模块，不包含任何第三方 npm 运行时依赖。
+
+构建本产品安装包时使用了以下工具（仅用于开发者构建环节，不随安装包分发）：
+
+- javascript-obfuscator（https://github.com/javascript-obfuscator/javascript-obfuscator，BSD-2-Clause License）
+
+本产品主体代码的版权归卖家所有；产品依据其商业授权条款分发，未经授权禁止复制、转售或再分发。

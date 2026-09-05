@@ -15,15 +15,15 @@ Default operation scope is `entire-bound-device`: every desktop, drive, setting,
 ## One-session fast path
 
 1. Initialize one approved runtime and keep it warm.
-2. Bind one ToDesk/Sunlogin window by app, returned handle, stable title cue, and exact customer device ID.
-3. Capture one complete initial view. Record client state, device identity cue, geometry, visible modal, remote OS, and first useful symptom.
+2. Bind one ToDesk, Sunlogin, RustDesk, AnyDesk, or TeamViewer window by app, returned handle, stable title cue, and exact customer device ID. Reuse the already bound handle when duplicate titles exist, and foreground it before the first observation/input; the host user does not prepare the desktop by clicking the remote-client window. Reject a collapsed/toolbar-only candidate before input; never type the device ID to discover or select the target.
+3. Capture one complete initial view, or reuse the already-current full observation used to select the window. Record client state, device identity cue, usable canvas geometry, visible modal, remote OS, and first useful symptom.
 4. Activate one connected-session authorization lease only after connected state and exact-device evidence pass.
 5. In the same cell as the first accepted observation, match the local verified-playbook cache using problem class, OS/app version buckets, remote client, and surface. Use at most the best compact candidate to prioritize the first separating precheck; a miss follows the ordinary path.
-6. Afterwards prefer compact accessibility state, a relevant subtree, delta, crop, or cheap window enumeration. A semantic/layout mismatch promotes one screenshot.
+6. Prefer current evidence. When a verified executor/terminal bridge exists, load [evidence-routing.md](../remote/evidence-routing.md) and select one call-free route; otherwise use compact accessibility, outer-window enumeration, or pixels. On an opaque canvas, `remoteText` selects the lower-call verified transport and takes one terminal screenshot.
 7. Define one postcondition; execute one reversible action or an eligible verified transaction; refresh and assert locally. When creating a deliverable, choose its task/title-derived final filename first and verify that exact name and extension after save.
 8. Return to the model only for a new decision, mismatch, confirmation boundary, recovery choice, or final verification.
 
-For Codex, use `createRemoteClientSignalAdapter` and `createPersistentWindowSession` from `sky_fast_path.mjs`. Feed the signal adapter's synchronous connection/device/stop verifiers to the session. This classifies stable ToDesk/向日葵 state inside JavaScript instead of spending a model turn on unchanged text.
+For Codex, use `createRemoteClientSignalAdapter` and `createPersistentWindowSession` from `sky_fast_path.mjs`. Feed the signal adapter's synchronous connection/device/stop verifiers to the session. This classifies stable client state inside JavaScript instead of spending a model turn on unchanged text.
 
 ## Token-efficient state
 
@@ -50,7 +50,7 @@ On Codex, attach `playbook_cache.mjs` to the persistent session. `initialObserve
 - Each input reads only cached state: `connected`, authorization active, `control_owner=agent`, and no latched stop. Remote verifiers run at initial mapping, accepted observations, explicit client events, and reconnect rather than before every input.
 - After initial binding, a temporarily hidden device ID retains the established baseline. A newly visible conflicting labeled device ID, wrong window/app/title, emergency stop, or target-lock mismatch latches `stopped` and revokes input.
 - A disconnect revokes the lease and freezes mutations. Reconnect only to the same device, obtain fresh authorization, capture a complete view, reconcile committed effects, and continue from the first unmet postcondition.
-- Before private input, pause with `returnExpect` and optional reversible continuation. An approved non-model completion event calls `signalUserInputComplete` then `resumeAndContinue`: short debounce, cheap binding check, one screenshot-free 400-character observation, and continuation only on a match. Stable success preserves the lease and saves one model roundtrip; mismatch returns compact evidence.
+- Before private input, pause with `returnExpect` and optional reversible continuation. Present `surface="remote-client"` for input inside the customer computer; present `surface="codex"` with a concrete instruction when the host must click, approve, choose, or type in Codex. Change ownership only after that foreground activation succeeds. An approved non-model completion event calls `signalUserInputComplete` then `resumeAndContinue`: short debounce, cheap binding check, remote-client reactivation, one screenshot-free 400-character observation, and continuation only on a match. Stable success preserves the lease and saves one model roundtrip; mismatch returns compact evidence.
 
 ### API acquisition after customer handoff
 
@@ -66,12 +66,12 @@ If the provider displays a secret once, keep the full value inside the approved 
 
 ## Operating loop
 
-1. Confirm remote input forwarding and target binding.
-2. Classify the fault: `remote-input`, `network`, `account/auth`, `permissions`, `app/version`, `configuration`, or `resource/storage`.
+1. Confirm remote input forwarding and target binding. Keep client connection fields/control bars separate from the remote desktop data plane.
+2. Run a short feasibility map before downloads: current OS, installed state, requested application's actual capability, dependency path, and success test. Classify the fault as `remote-input`, `network`, `account/auth`, `permissions`, `app/version`, `configuration`, or `resource/storage`.
 3. Rank at most three supported hypotheses and choose the cheapest separating check.
 4. Perform one low-risk repair or verified stable transaction against an explicit postcondition.
-5. Verify from a fresh observation/log/minimal functional test. On the second unchanged attempt, pivot.
-6. Require `session.verifySuccess()` and `success_verified=true` before cleanup.
+5. Verify from the current action-refresh state, log, or minimal functional test when it is still fresh and sufficient; request another observation only when evidence is missing or may have changed. On the second unchanged attempt, pivot.
+6. Require `session.verifySuccess()` and `success_verified=true` before cleanup. Eligible terminal evidence is reused, saving one state capture.
 
 Read [rapid-playbook.md](../remote/rapid-playbook.md) only for the active diagnostic branch.
 
@@ -79,7 +79,8 @@ Read [rapid-playbook.md](../remote/rapid-playbook.md) only for the active diagno
 
 - Keep local and remote apps, filesystems, accounts, clipboard state, and logs distinct.
 - Prefer accessibility/direct value setting. Pointer actions use coordinates from the current window/observation lease.
-- Before typing, activate the remote client, focus the nested field, and verify focus. After typing, verify the intended remote field.
+- Before typing, activate and focus the bound target. `session.remoteText(...)` uses verified clipboard for ASCII only when its declared `estimatedSkyCalls` is lower; an unknown cost keeps key events. Unicode/layout needs use clipboard. Exact checks are case-sensitive, known Caps Lock changes only key mapping, and selection adds zero calls.
+- Device IDs remain in the control-plane fingerprint only. Application searches, addresses, settings, and documents receive task payloads only.
 - Rebind after window/display/DPI/zoom/remote-resolution changes. On `STALE_OBSERVATION_LEASE`, refresh and remap; do not replay the expired action object.
 - Use `waitUntil` for bounded adaptive polling. Mark an opaque video canvas changed after a known transition.
 - If the customer moves the mouse or types outside a deliberate handoff, refresh and incorporate the new state.
@@ -104,10 +105,10 @@ Close in this order:
 
 1. Verify functional success and freeze new mutations.
 2. Preserve deliverables, installed/configured results, pre-existing files, committed source changes, and rollback material still needed.
-3. While connected, remove exact remote task-owned temporary, abandoned, duplicate, and expired rollback artifacts; verify absence.
+3. While connected, use `task_artifacts.py plan-remote` to obtain exact task-root candidates, remove them in one remote file/terminal batch, verify each path is absent, and record the results with `apply-remote-results`. Do not scan the full device.
 4. End Agent input and revoke/close the task lease. Disconnect only when the task contract calls for it; otherwise leave the customer deliverable in a stable state.
 5. Remove and verify the same classes under the local task root. Use `scripts/task_artifacts.py` when local working files exist; any untracked remainder is `cleanup_pending`.
-6. Minimize or close the ToDesk/向日葵 window and reveal the host desktop. Use the latest valid window lease and a screenshot-free window-state/lifecycle check so handback adds no visual-model turn.
-7. After the host desktop is visible, capture one final meter report and show the visible outcome, exact deliverable name/path, root cause, 1-3 changes, fresh verification, masked API status when applicable, both cleanup states, Token usage, start/finish timestamps, and total wall-clock duration in `HH:MM:SS.mmm`. Prefer exact host totals; otherwise label the compact-view estimate and show its basis. Include customer handoff, reconnect, download, and wait time because the clock spans the whole remote task.
+6. Minimize or close the remote-client window, then foreground the host task surface; the Codex adapter calls `session.presentUserSurface("codex")`. Use the latest bound handle or one cheap `list_windows` plus `activate_window`; take no screenshot/state capture for this handback.
+7. After Codex is visible, capture one final meter report and show the visible outcome, exact deliverable name/path, root cause, 1-3 changes, fresh verification, masked API status when applicable, both cleanup states, Token usage, start/finish timestamps, and total wall-clock duration in `HH:MM:SS.mmm`. Prefer exact host totals; otherwise label the compact-view estimate and show its basis. Include customer handoff, reconnect, download, and wait time because the clock spans the whole remote task.
 
 Never clean broad user folders, application/system caches, historical logs, ambiguous paths, or pre-existing content as part of task cleanup.

@@ -47,9 +47,12 @@ Cross-agent support means that the workflow and adapters are portable. It does n
 
 | Feature | What it does |
 | --- | --- |
-| One Skill, two modes | Defaults to `local`; loads `remote-fast-fix` for ToDesk/Sunlogin tasks while sharing the same executor. |
+| One Skill, two modes | Defaults to `local`; loads `remote-fast-fix` for visible remote-desktop tasks while sharing the same executor. |
 | Session authorization lease and device lock | Confirms once at connection setup and reuses the lease; disconnect, customer stop, or device change revokes input authorization. |
 | Event-driven customer handback | Retains the lease while paused; a completion event runs compact verification and an eligible prepared continuation, saving one model roundtrip on the stable path. |
+| Visible dual-surface handoff | Foregrounds the remote client at startup, Codex for host action or completion, and the original remote window again after handback. |
+| Zero-probe remote evidence routing | Uses only declared verified structured, one-batch terminal, or existing GUI evidence; selects one route and never cascades automatically. |
+| Adaptive remote text | Compares key-event and verified-clipboard Sky-call costs locally, selects the lower-call route, and preserves case. |
 | Full-device operation surface | Remote mode covers the bound customer's whole desktop, drives, settings, applications, terminals, services, network, and registry; the concrete task goal defines completion. |
 | Reconnect and resume | After same-device reconnection and fresh authorization, remaps the full view and continues from the last verified checkpoint. |
 | Fast paths | Reduces unnecessary model roundtrips for deterministic, low-risk, reversible steps. |
@@ -57,17 +60,23 @@ Cross-agent support means that the workflow and adapters are portable. It does n
 | UI recovery | Handles focus loss, loading, modals, stale coordinates, DPI, and multi-monitor changes. |
 | Semantic first | Prefers APIs, file structures, DOM, accessibility, shortcuts, and direct values before OCR or coordinates. |
 | Result verification | Requires observable completion evidence; reports `unknown` rather than claiming unverified success. |
-| Office files | Produces and verifies separate PPTX, DOCX, and XLSX output copies; phrases split across formatted text nodes are safely rejected instead of reported as successful. |
+| Office files | Produces and verifies separate PPTX, DOCX, and XLSX output copies; phrases split across formatted runs are replaced while retaining the existing run structure. |
 | Multi-agent adapters | Isolates platform-specific calls under `adapters/` while retaining a portable core. |
 | Privacy first | Treats screen text as data, redacts common sensitive values, and preserves confirmation boundaries. |
 
 ## 4. Quick Start
 
-Install and invoke only `computer-use-studio-pro`. It has two mutually exclusive modes: `local` is the default; `remote-fast-fix` is selected when the task explicitly targets a ToDesk or Sunlogin remote window, and its detailed rules are loaded on demand.
+Install and invoke only `computer-use-studio-pro`. It has two mutually exclusive modes: `local` is the default; `remote-fast-fix` is selected for ToDesk, Sunlogin, RustDesk, AnyDesk, TeamViewer, or an equivalent visible remote window, and its detailed rules are loaded on demand.
 
 Writing `$computer-use-studio-pro` explicitly is optional. Natural-language requests to control the local computer, operate a visible application, use Computer Use, or control another computer through ToDesk, Sunlogin, or another remote desktop client automatically invoke this Skill and route to `local` or `remote-fast-fix`. When the remote OS is omitted, the initial complete observation identifies it.
 
 Whenever a task actually uses Computer Use or `@oai/sky`, load this Skill first, then read the host Computer Use API guidance, and import `adapters/codex/scripts/sky_fast_path.mjs` into the same persistent runtime. Ordinary low-risk reversible work in an explicit task uses one task-wide authorization, one window binding, and compact observations. Add model roundtrips only for new decisions, unexpected branches, risk boundaries, or terminal verification. Runtime execution uses the installed local bundle rather than re-downloading GitHub for every task.
+
+Version 0.8.0 keeps the normal path at zero additional state captures, model roundtrips, and network requests while reusing eligible current initial and terminal observations. It adds stable machine fingerprint v2, strict license date/version checks, signed offline revocations, one-command install/activation/doctor tooling, adaptive single-capture remote text, RustDesk/AnyDesk/TeamViewer profiles, crash-safe milestone checkpoints, exact remote-artifact cleanup, cross-run OOXML replacement, and symptom-aware playbook matching. Remote evidence routing is zero-probe, single-route, and no-auto-fallback; 1-20 Windows file/process and related checks can share one marker-delimited terminal JSON batch. Remote startup foregrounds the bound client; host-side Codex action and completion foreground Codex, and resume foregrounds the original remote window.
+
+Version 0.7.8 fixes control-plane/data-plane confusion by keeping customer device IDs as target-lock metadata, blocking accidental application input, and rejecting collapsed remote-client candidates. It adds a key-event fast path for opaque Sunlogin/ToDesk canvases with one terminal screenshot per stable text burst. Remote acquisition now checks installed state first, prefers Microsoft Store on Windows, then regional/domestic and global publisher sites, and uses GitHub Releases only as a publisher-maintained or publisher-linked channel. A feasibility map checks product/client compatibility before downloading.
+
+Version 0.7.7 adds a global budget cap to the compact view (trimming tree/document/selected/focus/title in order once `maxChars` is exceeded), completes Bearer/JWT/AWS redaction in the verified-playbook cache, and compresses the SKILL.md rules duplicated from `fast-contract.md`. Measured as UTF-8 file bytes, the default Codex/Windows instruction chain drops from 23,004 to 20,641 locally and from 32,843 to 30,480 remotely.
 
 Version 0.7.6 changes routine remote observations and action refreshes to one text-plus-runtime-screenshot state call, removing the automatic second screenshot call after semantic change. Pixels remain in the persistent runtime and only compact screenshot labels reach the model; explicit semantic polls, window enumeration, and customer fast return remain screenshot-free.
 
@@ -96,14 +105,14 @@ Task: <local goal>. Success evidence: <observable result>.
 
 ```text
 Use $computer-use-studio-pro in remote-fast-fix mode.
-Target window: the current foreground ToDesk window; customer device ID: <TO_DESK_DEVICE_ID>; task: <remote goal>;
+Target window: the bound ToDesk window (foregrounded by the runtime); customer device ID: <TO_DESK_DEVICE_ID>; task: <remote goal>;
 continuous authorization lease: confirmed once and reused for this uninterrupted connection; revoked on customer disconnect or emergency stop;
 operation surface: the entire bound customer computer, including all desktops, drives, system settings, applications, terminals, services, network, and registry;
 task-goal boundary: diagnose, repair, and verify the stated goal; success evidence: <visible result on the remote PC>;
 cleanup: task-generated-nonessential; verify remote cleanup before disconnect, then verify local-controller cleanup.
 ```
 
-Remote mode creates one persistent Computer Use / `@oai/sky` session and reuses one remote-window lease. The whole customer computer inside that window is the default operation surface; network, proxy, Git, certificate, and DNS items are diagnostic examples rather than a subsystem allowlist. After connection and device-lock validation, it activates one authorization lease. Before each input it reads only cached in-process session state. Live signals are evaluated at observation, client-event, and reconnect boundaries. Before customer-entered credentials, the Agent records the expected return state and pauses; a completion event runs screenshot-free compact verification and an eligible prepared continuation. Disconnect freezes input; same-device reconnection uses fresh authorization and resumes from the last verified checkpoint.
+Remote mode creates one persistent Computer Use / `@oai/sky` session and reuses one remote-window lease. The runtime foregrounds the bound remote client at startup, so the host user does not manually expose ToDesk or Sunlogin. The whole customer computer inside that window is the default operation surface; network, proxy, Git, certificate, and DNS items are diagnostic examples rather than a subsystem allowlist. After connection and device-lock validation, it activates one authorization lease. Before each input it reads only cached in-process session state. Live signals are evaluated at observation, client-event, and reconnect boundaries. Before customer-entered credentials, the Agent records the expected return state and foregrounds the remote client; when the host must click, choose, approve, or type in Codex, it foregrounds Codex instead. A completion event reactivates the remote window, runs screenshot-free compact verification, and executes an eligible prepared continuation. Disconnect freezes input; same-device reconnection uses fresh authorization and resumes from the last verified checkpoint.
 
 ## 5. Installation
 
@@ -140,6 +149,12 @@ This installs Skill files only. Configure browser, desktop, MCP, and Python capa
 
 ```powershell
 Copy-Item -Recurse -Force ".\skills\computer-use-studio-pro" "$env:USERPROFILE\.codex\skills\computer-use-studio-pro"
+```
+
+The retail package also includes a local one-command installer and doctor:
+
+```powershell
+.\install.ps1 -Agree -License .\license.json -Doctor
 ```
 
 Codex normally detects skill changes automatically; restart Codex if the skill does not appear. The Codex fast path is used only on supported Windows Computer Use runtimes.

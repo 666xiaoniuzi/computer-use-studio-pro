@@ -19,14 +19,17 @@ Use these levers:
 11. call the model again only for a new decision, unexpected branch, risk boundary, or failed postcondition.
 12. verify app/window appearance or closure with `waitForWindowListState`, avoiding a full state capture when window lifecycle is the complete postcondition;
 13. use `runKeyboardBurst` for two or three inputs in one already-focused stable field, paying for one terminal observation instead of one observation per input.
-14. classify stable ToDesk/向日葵 connection, device, reconnect, disconnect, and stop signals with `createRemoteClientSignalAdapter` inside the persistent runtime rather than asking the model to reinterpret unchanged client text;
+14. classify stable ToDesk/向日葵/RustDesk/AnyDesk/TeamViewer connection, device, reconnect, disconnect, and stop signals with `createRemoteClientSignalAdapter` inside the persistent runtime rather than asking the model to reinterpret unchanged client text;
 15. reject expired coordinate, focus, and semantic leases before input, paying for recovery only when a reference is actually stale.
 16. keep the entrypoint, always-load contract, adapter, and selected profile concise; load detailed core workflow, recovery, and benchmark references only when the current branch needs them;
 17. keep full results in the persistent runtime and make `tokenView(result, { maxChars })` the final expression of the same execution cell, avoiding a second tool call and avoiding raw state emission.
 18. for customer handback, prepare the expected return state before pausing; let an approved local event call `signalUserInputComplete` and `resumeAndContinue`, combining debounce, binding check, one compact screenshot-free observation, and eligible continuation without another model turn.
-19. in remote mode, request text plus a runtime-retained screenshot in the first routine/action refresh and emit only compact screenshot labels; avoid the former text-only observation followed by an automatic screenshot recapture.
+19. in remote mode, take one complete initial screenshot and emit only compact screenshot labels; avoid a text-only observation followed by an automatic screenshot recapture.
+20. on a stable opaque remote canvas, use `runRemoteCanvasTextBurst`/`session.remoteCanvasText` so forwarded ASCII key events share one terminal screenshot instead of paying for a state capture after every character/action.
+21. pass an already-current full target observation into the persistent session instead of capturing it again; let terminal verification reuse a fresh action-refresh state that already satisfies the success condition and screenshot requirement.
+22. use `session.remoteUnicodeText` with one verified clipboard transfer and one terminal capture rather than per-character Unicode input.
 
-Do not reduce latency by reusing stale indexes/coordinates, hiding confirmations, or queueing general unverified GUI macros. `runKeyboardBurst` is the only terminal-only input burst: it requires current focus proof, stable single-field scope, a narrow keyboard vocabulary, an explicit confirmation-boundary declaration, and terminal semantic or visual verification.
+Do not reduce latency by reusing stale indexes/coordinates, hiding confirmations, or queueing general unverified GUI macros. Terminal-only input bursts require current focus proof, stable single-field scope, a narrow keyboard vocabulary, an explicit confirmation-boundary declaration, and terminal semantic or visual verification. The remote-canvas variant additionally blocks device-ID payloads and defaults to key-event forwarding.
 
 ## Measure before claiming improvement
 
@@ -52,8 +55,17 @@ Track:
 - Stable accessibility tasks avoid screenshot capture.
 - A successful straight-line reversible sequence returns to the model once, not once per action.
 - An eligible two- or three-input keyboard burst performs exactly one terminal state capture and reports `saved_observations`.
+- A remote-canvas ASCII burst performs exactly one terminal screenshot/state capture regardless of payload length, sends no raw `type_text`, and blocks the bound device ID from ordinary payloads.
+- A verified Unicode clipboard burst preserves/restores the prior clipboard and performs exactly one terminal state capture.
+- Adaptive `remoteText` selection performs zero tool/model calls and chooses verified clipboard for ASCII only when its declared Sky-call count is lower than key events (or Unicode/layout requires it); unknown cost keeps the existing key-event path.
+- Remote evidence route selection performs zero inventory/network/tool calls, executes exactly one route, and has zero automatic fallbacks. A Windows terminal evidence run combines 1-20 read-only probes into one batch and reports its actual state-capture count.
+- Route latency learning stays in memory, adds zero I/O, and influences only later decisions; a failed route is not replayed through a slower path inside the same call.
+- Exact text/window expectations remain case-sensitive by default; supplied Caps Lock state changes only local key mapping and adds zero observations.
+- A supplied full initial observation and an eligible terminal action-refresh each save one `get_window_state` call; `forceRefresh` disables terminal reuse when external change is possible.
+- A collapsed or toolbar-only remote-client candidate is rejected before input.
 - Window lifecycle verification uses lightweight enumeration and does not capture the screen.
-- Stable ToDesk/向日葵 observations are classified by the local signal adapter with no model call; a newly visible conflicting device ID revokes the session.
+- Remote startup foregrounds the bound client before mapping. A Codex takeover/completion foregrounds Codex, and handback reactivates the original remote window; each presentation performs zero `get_window_state` calls.
+- Stable supported remote-client observations are classified by the local signal adapter with no model call; a newly visible conflicting device ID revokes the session.
 - An expired input lease produces zero input actions and reports its lease class, age, and maximum age.
 - A failed transaction stops at its first mismatched assertion and reports the completed step count.
 - Duplicate-prone actions never retry without durable status/history checks.
@@ -122,8 +134,20 @@ Using the earlier host medians only as a reference calculation, replacing one te
 
 After deduplicating the loaded instructions, the reproducible UTF-8 byte proxy decreases versus 0.7.5: local `23,079 -> 23,004` (`-0.32%`) and remote `32,918 -> 32,843` (`-0.23%`). Runtime screenshot labels remain a small per-view addition; provider billing still requires host counters.
 
+## 0.7.8 opaque-canvas regression
+
+The deterministic regression now verifies that a focus click, clear/replace sequence, printable-ASCII payload, and submit key use one terminal screenshot/state capture. It also verifies zero input/state calls when the payload contains the bound customer device ID and rejects a remote-client candidate whose canvas height/width ratio is below `0.15`.
+
+Using the earlier host state-capture median of roughly `3.1 s`, the latency saved by one burst is approximately `(avoided state captures × 3.1 s)` before remote-network and key-forwarding costs. This is a structural estimate, not an end-to-end percentage; use three comparable live runs for a task-level claim.
+
 ## 0.7.2 customer-handback reference
 
 The deterministic mock regression for a signaled customer handback plus one prepared verified action produced zero screenshots, a 400-character-budget `tokenView` of 660 serialized characters, and `model_roundtrips_saved=1`. It also verifies that Agent input remains paused before the matching completion event and that the authorization verifier is not repeated. Real remote latency still includes one current semantic observation and each prepared action's verification refresh.
 
 The default Codex/Windows instruction chains did not grow: local decreased from `18,172` to `18,071` UTF-8 bytes and remote from `26,205` to `26,201`. Thus the new handback capability adds no default instruction-size token proxy. Measure provider billing and real ToDesk/Sunlogin handback latency separately when those counters are available.
+
+## 0.8.0 state-capture elimination contract
+
+The host Computer Use service owns the raw latency of one `get_window_state`; the Skill improves end-to-end time by eliminating eligible calls rather than adding an unsafe cache. A target observation supplied to `createPersistentWindowSession` is accepted only after the same window/device/canvas checks and can save the initial duplicate capture. `verifySuccess()` reuses the latest accepted action-refresh state only while it is current, contains the required screenshot when requested, and already satisfies the terminal predicate.
+
+Using the existing host reference of roughly `3.1 s` per state capture, saving both an initial duplicate and a terminal duplicate removes roughly `6.2 s` from an eligible task. This is a structural estimate; the normal-path regression requires `saved_observations=1`, `sky_calls=0` for each reuse and unchanged terminal evidence. Capability routing, signed-license checks, playbook scoring, and milestone checkpoint queuing remain local and add no Computer Use or network call.

@@ -11,10 +11,10 @@ Reuse only successful semantic repair trajectories without adding a model roundt
 Use these normalized fields:
 
 ```text
-problem_class | OS family/version bucket | app/version bucket | remote client | surface
+problem_class | redacted symptom | OS family/version bucket | app/version bucket | remote client | surface
 ```
 
-`problem_class` is required. An exact class match is mandatory; app and version agreement raise confidence. Device ID, account identity, customer name, full paths, screenshots, coordinates, element indexes, and window handles never enter the fingerprint.
+`problem_class` is required. An exact class match is mandatory; patch-level version agreement, redacted symptom token/bigram similarity, and empirical success confidence raise rank. A dissimilar supplied symptom fails the minimum similarity gate. Device ID, account identity, customer name, full paths, screenshots, coordinates, element indexes, and window handles never enter the fingerprint.
 
 ## Stored recipe
 
@@ -35,6 +35,8 @@ Raw typed values, secrets, clipboard contents, device identifiers, screenshots, 
 3. A second identical verified success with no failure promotes it to `trusted`.
 4. A matched recipe that fails its expected postcondition records a failure and falls back to normal diagnosis.
 5. Repeated failures retire the recipe. Version mismatches reduce its score rather than forcing reuse.
+
+Use `manage_playbooks.mjs stats`, `list [status]`, `remove <id>`, or `clear-retired` to inspect and maintain local entries without a GUI or model call.
 
 ## Zero-roundtrip integration
 

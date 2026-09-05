@@ -17,12 +17,20 @@ import { basename, dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
+import { enforceRuntimeGate } from "./license_check.mjs";
+
+// 零售授权门控：与 sky_fast_path.mjs 相同，未通过时拒绝加载。
+enforceRuntimeGate();
+
 const SCHEMA = 1;
 const MAX_RECIPES = 128;
 const MAX_TEXT = 180;
 const DEFAULT_MATCH_CHARS = 900;
 const SECRET_ASSIGNMENT = /(?:\b(?:password|passwd|secret|token|cookie|authorization|api[_-]?key|otp)\b|密码|口令|令牌|密钥|验证码)\s*[:=：]\s*[^\s,;，；]+/giu;
 const PREFIX_SECRET = /\b(?:sk|ghp|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{8,}\b/gu;
+const BEARER_SECRET = /\bbearer\s+[A-Za-z0-9._~+/=-]{8,}\b/giu;
+const JWT_SECRET = /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/gu;
+const AWS_ACCESS_KEY = /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/gu;
 const EMAIL = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/giu;
 const PHONE = /(?<!\d)(?:\+?\d[\d -]{7,}\d)(?!\d)/gu;
 const RAW_REFERENCE_KEYS = /^(?:x|y|from_x|from_y|to_x|to_y|screenshot_?id|element_?index|window_?id|device_?id|remote_?id|password|secret|token|cookie|api_?key|otp)$/iu;
@@ -31,6 +39,9 @@ function cleanText(value, limit = MAX_TEXT) {
   const text = String(value ?? "")
     .replace(SECRET_ASSIGNMENT, "[REDACTED]")
     .replace(PREFIX_SECRET, "[REDACTED]")
+    .replace(BEARER_SECRET, "Bearer [REDACTED]")
+    .replace(JWT_SECRET, "[REDACTED_JWT]")
+    .replace(AWS_ACCESS_KEY, "[REDACTED_AWS_KEY]")
     .replace(EMAIL, "[REDACTED_EMAIL]")
     .replace(PHONE, "[REDACTED_PHONE]")
     .replace(/\s+/gu, " ")
@@ -43,8 +54,29 @@ function normal(value, limit = 80) {
 }
 
 function versionBucket(value) {
-  const match = String(value ?? "").match(/\d+(?:\.\d+)?/u);
+  const match = String(value ?? "").match(/\d+(?:\.\d+){0,2}/u);
   return match?.[0] ?? "";
+}
+
+function symptomTokens(value) {
+  const text = normal(value, 160);
+  const words = text.match(/[a-z0-9]+/gu) ?? [];
+  const chinese = [...text.replace(/[^\p{Script=Han}]/gu, "")];
+  const bigrams = chinese.slice(0, -1).map((character, index) => character + chinese[index + 1]);
+  return new Set([...words, ...bigrams]);
+}
+
+function symptomSimilarity(left, right) {
+  const a = symptomTokens(left);
+  const b = symptomTokens(right);
+  if (a.size === 0 || b.size === 0) return null;
+  let intersection = 0;
+  for (const token of a) if (b.has(token)) intersection += 1;
+  return intersection / (a.size + b.size - intersection);
+}
+
+function confidence(entry) {
+  return Math.round(((entry.successes + 1) / (entry.successes + entry.failures + 2)) * 1000) / 1000;
 }
 
 function normalizeContext(context = {}) {
@@ -180,9 +212,12 @@ function scoreRecipe(entry, context) {
   score += compare("app_version", 1.5, -1.5);
   score += compare("remote_client", 0.5, 0);
   score += compare("surface", 0.5, 0);
+  const symptomScore = symptomSimilarity(entry.context.symptom, context.symptom);
+  if (symptomScore != null) score += symptomScore >= 0.12 ? Math.min(3, symptomScore * 4) : -1.5;
   score += entry.status === "trusted" ? 1 : 0;
   score += Math.min(2, entry.successes * 0.4);
   score -= Math.min(3, entry.failures * 0.75);
+  score += (confidence(entry) - 0.5) * 2;
   return Math.round(score * 10) / 10;
 }
 
@@ -193,6 +228,7 @@ function publicEntry(entry, score) {
     score,
     successes: entry.successes,
     failures: entry.failures,
+    confidence: confidence(entry),
     title: entry.recipe.title,
     prechecks: entry.recipe.prechecks,
     steps: entry.recipe.steps.slice(0, 3),
@@ -232,8 +268,11 @@ export async function openVerifiedPlaybookCache(options = {}) {
     const data = await loadData(filePath);
     const recipes = data.recipes
       .filter((entry) => entry.status !== "retired")
-      .map((entry) => ({ entry, score: scoreRecipe(entry, context) }))
-      .filter(({ score }) => Number.isFinite(score) && score >= (matchOptions.minScore ?? 7))
+      .map((entry) => ({ entry, score: scoreRecipe(entry, context), symptom_similarity: symptomSimilarity(entry.context.symptom, context.symptom) }))
+      .filter(({ entry, score, symptom_similarity }) => Number.isFinite(score)
+        && score >= (matchOptions.minScore ?? 7)
+        && confidence(entry) >= (matchOptions.minConfidence ?? 0.45)
+        && (symptom_similarity == null || symptom_similarity >= (matchOptions.minSymptomSimilarity ?? 0.05)))
       .sort((left, right) => right.score - left.score || right.entry.successes - left.entry.successes)
       .slice(0, Math.max(1, Math.min(2, matchOptions.limit ?? 2)))
       .map(({ entry, score }) => publicEntry(entry, score));
@@ -280,12 +319,13 @@ export async function openVerifiedPlaybookCache(options = {}) {
     }, options);
   };
 
-  const recordFailure = async ({ id }) => withLock(filePath, async () => {
+  const recordFailure = async ({ id, reason = "postcondition-missed" }) => withLock(filePath, async () => {
     const data = await loadData(filePath);
     const entry = data.recipes.find((item) => item.id === id);
     if (!entry) return { recorded: false, reason: "unknown-playbook" };
     entry.failures += 1;
     entry.last_failure_at = new Date().toISOString();
+    entry.last_failure_reason = cleanText(reason, 120);
     if (entry.failures >= 2 && entry.failures >= entry.successes) entry.status = "retired";
     data.updated_at = entry.last_failure_at;
     await atomicWrite(filePath, data);
@@ -303,7 +343,35 @@ export async function openVerifiedPlaybookCache(options = {}) {
     };
   };
 
-  return { filePath, match, recordVerifiedSuccess, recordFailure, stats };
+  const list = async (listOptions = {}) => {
+    const data = await loadData(filePath);
+    return data.recipes
+      .filter((entry) => listOptions.status == null || entry.status === listOptions.status)
+      .sort((left, right) => (right.last_success_at ?? "").localeCompare(left.last_success_at ?? ""))
+      .slice(0, Math.max(1, Math.min(128, listOptions.limit ?? 50)))
+      .map((entry) => publicEntry(entry, scoreRecipe(entry, entry.context)));
+  };
+
+  const remove = async (id) => withLock(filePath, async () => {
+    const data = await loadData(filePath);
+    const before = data.recipes.length;
+    data.recipes = data.recipes.filter((entry) => entry.id !== id);
+    if (data.recipes.length === before) return { removed: false, reason: "unknown-playbook" };
+    data.updated_at = new Date().toISOString();
+    await atomicWrite(filePath, data);
+    return { removed: true, id };
+  }, options);
+
+  const clearRetired = async () => withLock(filePath, async () => {
+    const data = await loadData(filePath);
+    const before = data.recipes.length;
+    data.recipes = data.recipes.filter((entry) => entry.status !== "retired");
+    data.updated_at = new Date().toISOString();
+    await atomicWrite(filePath, data);
+    return { removed: before - data.recipes.length, remaining: data.recipes.length };
+  }, options);
+
+  return { filePath, match, recordVerifiedSuccess, recordFailure, stats, list, remove, clearRetired };
 }
 
 export async function selfTest() {
@@ -321,13 +389,13 @@ export async function selfTest() {
       device_id: "123456789",
     };
     const recipe = {
-      title: "Plugin download repair token=secret-value",
+      title: "Plugin download repair token=secret-value Bearer abcdefgh12345678",
       prechecks: ["Read exact error", "Check marketplace visibility"],
       steps: [
         { action: "inspect", target: "plugin status", expect: "error classified", element_index: 42 },
         { action: "retry", target: "plugin download", expect: "installed" },
       ],
-      success_checks: ["Installed entry visible"],
+      success_checks: ["Installed entry visible", "key eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature123456 AKIAIOSFODNN7EXAMPLE"],
       rollback: ["Restore original proxy mode"],
     };
     const empty = await cache.match(context);
@@ -339,7 +407,9 @@ export async function selfTest() {
       throw new Error("verified playbook match failed");
     }
     const raw = await readFile(filePath, "utf8");
-    if (raw.includes("secret-value") || raw.includes("123456789") || raw.includes("element_index")) {
+    if (raw.includes("secret-value") || raw.includes("123456789") || raw.includes("element_index")
+        || raw.includes("abcdefgh12345678") || raw.includes("eyJhbGciOiJIUzI1NiJ9")
+        || raw.includes("AKIAIOSFODNN7EXAMPLE")) {
       throw new Error("playbook cache retained secret/device/stale UI references");
     }
     const second = await cache.recordVerifiedSuccess({ context: { ...context, symptom: "plugin download timed out" }, recipe, evidence: { success_verified: true } });
@@ -349,6 +419,12 @@ export async function selfTest() {
     const reopened = await openVerifiedPlaybookCache({ filePath });
     const stats = await reopened.stats();
     if (stats.recipes !== 1) throw new Error("playbook cache persistence failed");
+    const mismatch = await reopened.match({ ...context, symptom: "audio device produced no sound" }, { minScore: 9 });
+    if (mismatch.matched) throw new Error("dissimilar symptom matched too strongly");
+    const listed = await reopened.list();
+    if (listed.length !== 1 || listed[0].confidence == null) throw new Error("playbook cache management listing failed");
+    const removed = await reopened.remove(second.id);
+    if (!removed.removed || (await reopened.stats()).recipes !== 0) throw new Error("playbook cache remove failed");
     return "self-test: ok";
   } finally {
     await rm(root, { recursive: true, force: true });

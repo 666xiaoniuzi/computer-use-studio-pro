@@ -2,6 +2,8 @@
 
 Read this reference when a customer-side executor, policy MCP server, or structured remote-repair tool is available or being implemented.
 
+On Codex, adapt an existing verified executor to `remote_evidence.mjs` rather than probing for one during a task. Its route selector is synchronous, uses declared latency/capability metadata, and executes one selected route with no automatic fallback. Visible-client-only Windows checks can instead use its one-process read-only terminal batch.
+
 ## Architecture contract
 
 The planner proposes an action. The policy gate returns a decision. The executor runs only an approved action. The verifier evaluates the result independently.

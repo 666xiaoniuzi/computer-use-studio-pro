@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+from bisect import bisect_right
+from html import unescape
 import json
 import os
 import re
@@ -18,6 +20,10 @@ OOXML_SUFFIXES = {".pptx", ".docx", ".xlsx", ".pptm", ".docm", ".xlsm"}
 TEXT_PARTS = (".xml",)
 TEXT_NODE = re.compile(
     r"(?P<open><(?P<tag>(?:[A-Za-z_][\w.-]*:)?t)(?:\s[^>]*)?>)(?P<value>.*?)(?P<close></(?P=tag)\s*>)",
+    re.DOTALL,
+)
+TEXT_CONTAINER = re.compile(
+    r"<(?P<tag>(?:[A-Za-z_][\w.-]*:)?(?:p|si|is))(?:\s[^>]*)?>.*?</(?P=tag)\s*>",
     re.DOTALL,
 )
 XML_ENCODING = re.compile(br"<\?xml[^>]*\bencoding=[\"']([^\"']+)[\"']", re.IGNORECASE)
@@ -142,21 +148,75 @@ def decode_xml(data: bytes, filename: str) -> tuple[str, str]:
 
 
 def replace_text_nodes(text: str, replacements: list[tuple[str, str]], counts: list[int]) -> str:
-    escaped = [(escape(old), escape(new)) for old, new in replacements]
-    pattern = re.compile("|".join(re.escape(old) for old, _ in sorted(escaped, key=lambda pair: len(pair[0]), reverse=True)))
-    by_old = {old: (index, new) for index, (old, new) in enumerate(escaped)}
+    """Replace logical text across formatted OOXML runs while retaining run markup."""
+    pattern = re.compile("|".join(re.escape(old) for old, _ in sorted(replacements, key=lambda pair: len(pair[0]), reverse=True)))
+    by_old = {old: (index, new) for index, (old, new) in enumerate(replacements)}
 
-    def rewrite(match: re.Match[str]) -> str:
-        value = match.group("value")
-        def substitute(found: re.Match[str]) -> str:
+    def rewritten_open(open_tag: str, value: str) -> str:
+        if value and (value[0].isspace() or value[-1].isspace()) and "xml:space" not in open_tag:
+            return open_tag[:-1] + ' xml:space="preserve">'
+        return open_tag
+
+    def rewrite_container(container: str) -> str:
+        nodes = list(TEXT_NODE.finditer(container))
+        if not nodes:
+            return container
+        values = [unescape(node.group("value")) for node in nodes]
+        logical = "".join(values)
+        matches = list(pattern.finditer(logical))
+        if not matches:
+            return container
+
+        starts = []
+        position = 0
+        for value in values:
+            starts.append(position)
+            position += len(value)
+        ends = starts[1:] + [len(logical)]
+        output = [""] * len(nodes)
+
+        def append_original(start: int, end: int) -> None:
+            if end <= start:
+                return
+            first = max(0, bisect_right(starts, start) - 1)
+            for node_index in range(first, len(nodes)):
+                left = max(start, starts[node_index])
+                right = min(end, ends[node_index])
+                if right > left:
+                    output[node_index] += logical[left:right]
+                if ends[node_index] >= end:
+                    break
+
+        cursor = 0
+        for found in matches:
+            append_original(cursor, found.start())
             index, new = by_old[found.group(0)]
+            target_node = max(0, min(len(nodes) - 1, bisect_right(starts, found.start()) - 1))
+            output[target_node] += new
             counts[index] += 1
-            return new
+            cursor = found.end()
+        append_original(cursor, len(logical))
 
-        value = pattern.sub(substitute, value)
-        return match.group("open") + value + match.group("close")
+        pieces = []
+        cursor = 0
+        for node, value in zip(nodes, output):
+            pieces.append(container[cursor:node.start()])
+            pieces.append(rewritten_open(node.group("open"), value) + escape(value) + node.group("close"))
+            cursor = node.end()
+        pieces.append(container[cursor:])
+        return "".join(pieces)
 
-    return TEXT_NODE.sub(rewrite, text)
+    pieces = []
+    cursor = 0
+    for container in TEXT_CONTAINER.finditer(text):
+        # Standalone text nodes outside paragraphs/shared strings retain the old
+        # single-node behavior; container nodes gain cross-run replacement.
+        prefix = text[cursor:container.start()]
+        pieces.append(TEXT_NODE.sub(lambda match: rewrite_container(match.group(0)), prefix))
+        pieces.append(rewrite_container(container.group(0)))
+        cursor = container.end()
+    pieces.append(TEXT_NODE.sub(lambda match: rewrite_container(match.group(0)), text[cursor:]))
+    return "".join(pieces)
 
 
 def replace_copy(source: Path, output: Path, replacements: list[tuple[str, str]], require_all: bool, overwrite: bool = False) -> dict:
@@ -233,12 +293,12 @@ def self_test() -> None:
             package.writestr("[Content_Types].xml", "<Types/>")
             package.writestr("ppt/slides/slide1.xml", '<p:sld xmlns:p="urn:p" xmlns:a="urn:a"><a:p><a:t>Hello </a:t><a:t>world</a:t></a:p></p:sld>')
         assert verify(split_source, ["Hello world"], [])["ok"]
-        try:
-            replace_copy(split_source, split_output, pairs(["Hello world=Hi"]), True)
-        except SystemExit as error:
-            assert "multiple formatted nodes" in str(error)
-        else:
-            raise AssertionError("split-node replacement was not rejected")
+        split_result = replace_copy(split_source, split_output, pairs(["Hello world=Hi"]), True)
+        assert split_result["replacement_counts"] == [1]
+        assert verify(split_output, ["Hi"], ["Hello world"])["ok"]
+        with zipfile.ZipFile(split_output, "r") as package:
+            split_xml = package.read("ppt/slides/slide1.xml")
+            assert split_xml.count(b"<a:t") == 2 and b"<a:t>Hi</a:t>" in split_xml
     print("self-test: ok")
 
 
