@@ -8,7 +8,7 @@
 - 新增**控件级验证**：`expectationResult` 支持 `elementIndex` + `elementValueEquals` / `elementValueIncludes` / `elementLabelIncludes` 树行级断言；`fillEditable` 直接写入策略默认绑定到元素自身值，消除"文本出现但落错控件"的假阳性。
 - 新增 **Codex 窗口偏好绑定**：会话已绑定的 Codex 窗口句柄在枚举候选中优先激活，多窗口不再落到首个匹配；`warmUpRuntime` 在任务首个决策前支付一次冷启动税。
 - 新增**会话级本地统计**：观察/动作次数与耗时、验证失败、未知结果、恢复次数全部纯内存累计，零额外调用，随 `snapshot().profile` 与 `profileStats()` 导出。
-- 激活与授权方式保持不变：协议同意 → 机器码 v2 → 签名授权（Ed25519 + 设备绑定 + 有效期 + 技能版本范围 + 离线吊销），导入时门控，运行时内存缓存断言；仅版本号升至 0.9.0（默认授权 `minSkillVersion=0.8.0` 无上限，已发标准授权继续有效）。
+- 激活与授权方式保持不变：协议同意 → 机器码 v2 → 签名授权（Ed25519 + 设备绑定 + 有效期 + 技能版本范围 + 离线吊销），导入时门控，运行时内存缓存断言；仅 `SKILL_VERSION` 升至 0.9.0。`issue_license.mjs` 默认仍为 `minSkillVersion=0.8.0`、`maxSkillVersion=null`，因此新签发授权可同时激活 v0.8.0 与 v0.9.0 包，已发标准授权继续有效。
 
 ## 0.8.0 - 2026-08-31
 

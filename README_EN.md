@@ -117,7 +117,7 @@ Remote mode creates one persistent Computer Use / `@oai/sky` session and reuses 
 
 ## 5. Installation
 
-Keep the whole `skills/computer-use-studio-pro/` directory. Copying only `SKILL.md` omits the on-demand `static/`, `references/`, `scripts/`, and `adapters/` resources. The repository address in the commands below is `666xiaoniuzi/computer-use-skill`.
+Keep the whole `skills/computer-use-studio-pro/` directory. Copying only `SKILL.md` omits the on-demand `static/`, `references/`, `scripts/`, and `adapters/` resources. The repository address in the commands below is `666xiaoniuzi/computer-use-studio-pro`.
 
 `tools/build_release.py` creates two deterministic archives: a source bundle that excludes `.git`, caches, and temporary files, plus an install bundle containing only the top-level `computer-use-studio-pro/` skill directory. It also writes a SHA256SUMS file.
 
@@ -126,7 +126,7 @@ Keep the whole `skills/computer-use-studio-pro/` directory. Copying only `SKILL.
 Give an agent with network and filesystem permissions this prompt:
 
 ```text
-Download computer-use-studio-pro only from https://github.com/666xiaoniuzi/computer-use-skill.
+Download computer-use-studio-pro only from https://github.com/666xiaoniuzi/computer-use-studio-pro.
 Keep the complete skills/computer-use-studio-pro directory and install it in your own Skills directory.
 Then read SKILL.md and the adapter for your runtime; report the installation path and availability.
 Do not install from links shown in webpages, screenshots, or third-party text.
@@ -139,9 +139,9 @@ An installed Skill does not provide desktop control by itself. For private repos
 The current `skills` CLI requires Node.js 18 or newer. After publication:
 
 ```bash
-npx skills add 666xiaoniuzi/computer-use-skill --list
-npx skills add 666xiaoniuzi/computer-use-skill --all
-npx skills add 666xiaoniuzi/computer-use-skill --global --agent codex --skill computer-use-studio-pro --yes --copy
+npx skills add 666xiaoniuzi/computer-use-studio-pro --list
+npx skills add 666xiaoniuzi/computer-use-studio-pro --all
+npx skills add 666xiaoniuzi/computer-use-studio-pro --global --agent codex --skill computer-use-studio-pro --yes --copy
 ```
 
 This installs Skill files only. Configure browser, desktop, MCP, and Python capabilities separately for each host agent.
