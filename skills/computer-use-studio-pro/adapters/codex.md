@@ -2,33 +2,40 @@
 
 Use Codex-approved computer, browser, connector, and file tools. For Windows Computer Use, load the bundled host Computer Use API guidance, then import `adapters/codex/scripts/sky_fast_path.mjs` into the same persistent `node_repl` kernel before the first input. It wraps the approved `sky` object; it is not another input driver.
 
-## One-time startup
+## Version-aware startup
 
 ```js
 if (!globalThis.sky) {
   const { sky } = await import("@oai/sky");
   globalThis.sky = sky;
 }
-if (!globalThis.cusproFastPath) {
+{
   const path = await import("node:path");
   const os = await import("node:os");
+  const fs = await import("node:fs/promises");
   const { pathToFileURL } = await import("node:url");
   const homeDir = nodeRepl.homeDir || os.homedir();
-  const modulePath = path.join(homeDir, ".codex", "skills", "computer-use-studio-pro", "adapters", "codex", "scripts", "sky_fast_path.mjs");
-  globalThis.cusproFastPath = await import(pathToFileURL(modulePath).href);
-}
-if (!globalThis.cusproCapabilities) {
-  globalThis.cusproCapabilities = globalThis.cusproFastPath.inspectSkyCapabilities(globalThis.sky);
-}
-if (!globalThis.cusproWarm) {
-  globalThis.cusproWarm = await globalThis.cusproFastPath.warmUpRuntime(globalThis.sky);
-}
-if (!globalThis.cusproUsage) {
-  globalThis.cusproUsage = globalThis.cusproFastPath.createTaskUsageMeter();
+  const skillRoot = path.join(homeDir, ".codex", "skills", "computer-use-studio-pro");
+  const manifestPath = path.join(skillRoot, "manifest.yaml");
+  const modulePath = path.join(skillRoot, "adapters", "codex", "scripts", "sky_fast_path.mjs");
+  const manifestText = await fs.readFile(manifestPath, "utf8");
+  const versionMatch = manifestText.match(/^version:\s*([^\s#]+)/m);
+  const currentVersion = versionMatch?.[1] || "unknown";
+  const runtimeMtime = Math.trunc((await fs.stat(modulePath)).mtimeMs);
+  const runtimeStamp = `${currentVersion}:${runtimeMtime}`;
+  if (globalThis.cusproRuntimeStamp !== runtimeStamp) {
+    const moduleUrl = `${pathToFileURL(modulePath).href}?rev=${encodeURIComponent(runtimeStamp)}`;
+    globalThis.cusproFastPath = await import(moduleUrl);
+    globalThis.cusproCapabilities = globalThis.cusproFastPath.inspectSkyCapabilities(globalThis.sky);
+    globalThis.cusproWarm = await globalThis.cusproFastPath.warmUpRuntime(globalThis.sky);
+    globalThis.cusproUsage = globalThis.cusproFastPath.createTaskUsageMeter();
+    globalThis.cusproRuntimeStamp = runtimeStamp;
+    globalThis.cusproSkillVersion = currentVersion;
+  }
 }
 ```
 
-`warmUpRuntime` pays the cold-start tax once with a single cheap `list_windows` (measured from roughly `1004.98 ms` cold to `14.83 ms` warm), before the first task decision; it performs no state capture, adds no model roundtrip, and a failure is non-blocking.
+The manifest version plus runtime-file modification time is checked at each task start. A changed stamp creates a cache-busted module URL and replaces the prior globals before input, so a persistent kernel uses the current installed implementation rather than an earlier task's module cache. `warmUpRuntime` then pays the cold-start tax once for that stamp with a single cheap `list_windows` (measured from roughly `1004.98 ms` cold to `14.83 ms` warm); it performs no state capture, adds no model roundtrip, and a failure is non-blocking.
 
 Use the actual Skill root when installation differs. Reuse these globals for the whole task. Capability negotiation is synchronous and adds no Computer Use call. When a task is classified as `remote-fast-fix`, call `globalThis.cusproUsage.startTask()` exactly once as soon as its compact task contract is accepted and before the first remote observation or input; this resets prior counters and establishes the wall-clock start.
 
@@ -56,7 +63,9 @@ Prefer the matching helper, persistent session, signal adapter, and `tokenView`;
 
 ## Remote execution
 
-Import `playbook_cache.mjs` beside `sky_fast_path.mjs` once per remote runtime, open `cusproPlaybooks`, and pass it plus the normalized problem/OS/app/version/client/surface context and compact semantic labels to `createPersistentWindowSession`. `initialObserve()` returns the best match in its existing cell; `verifySuccess()` automatically promotes verified semantic steps in its closeout cell.
+For an explicit software or dependency request, use the remote terminal bridge or the highest available remote executor to perform the complete acquisition flow directly. Do not add a routine approval prompt, do not ask the host to paste a PowerShell block, and do not pause between dependency bootstrap steps. Prefer non-interactive per-user installation and verify the installed version and minimal functional test before reporting completion. Escalate only at a host-required elevation, private-input, sign-in, or other confirmation boundary.
+
+Import `playbook_cache.mjs` beside `sky_fast_path.mjs` once per remote runtime using the current `globalThis.cusproRuntimeStamp` as its cache-busting query, open `cusproPlaybooks`, and pass it plus the normalized problem/OS/app/version/client/surface context and compact semantic labels to `createPersistentWindowSession`. Apply the same stamp to `remote_evidence.mjs` and `runtime_checkpoint.mjs` imports. `initialObserve()` returns the best match in its existing cell; `verifySuccess()` automatically promotes verified semantic steps in its closeout cell.
 
 Create one `createRemoteClientSignalAdapter(clientName, { remoteDeviceId })` and one `createPersistentWindowSession` for the current ToDesk, Sunlogin, RustDesk, AnyDesk, or TeamViewer window. Provide target app/title, exact device ID, task goal, success condition, authorization signal, playbook cache/context, optional checkpoint store, and the adapter's connection/device/stop verifiers. `operationScope` defaults to `entire-bound-device`.
 

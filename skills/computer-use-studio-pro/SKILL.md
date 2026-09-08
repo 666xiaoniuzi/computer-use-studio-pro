@@ -22,7 +22,7 @@ Use one chain, not two planners or input drivers:
 computer-use-studio-pro -> host Computer Use API guidance -> one persistent runtime -> one target binding
 ```
 
-Before the first input, read [manifest.yaml](manifest.yaml), its `always_load` file, exactly one runtime adapter, and only the active surface fragment. Keep them in context for the task; do not reload them per action or fetch the upstream repository during execution.
+Before the first input of every task, resolve the active Skill path and read the current [manifest.yaml](manifest.yaml), its `always_load` file, exactly one runtime adapter, and only the active surface fragment. Treat the current manifest version and runtime-file modification time as a freshness stamp: when either changed, reload the active files/modules before input instead of reusing an earlier task's cached bundle. Keep that fresh bundle in context for the task; do not reload it per action or fetch the upstream repository during execution.
 
 ## Compact task contract
 
@@ -34,7 +34,7 @@ Create one six-field capsule and update only changed fields:
 mode | target/window + remote device ID | goal | success evidence | current checkpoint | confirmation/takeover boundary
 ```
 
-An explicit task grants continuous task authorization for ordinary low-risk reversible work across the selected local computer or bound remote device. Do not add per-click, per-key, per-window, or routine-verification prompts. Pause at a host-required confirmation point, consequential action, user takeover, interruption, target change, or missing authority.
+An explicit task grants continuous task authorization for ordinary low-risk reversible work across the selected local computer or bound remote device. This includes checking, downloading, installing, updating, and configuring a named user-space application or a dependency required by the requested result. Do not add per-click, per-key, per-window, routine-verification, or routine software-acquisition prompts, and do not hand routine terminal commands back to the user. Pause only at a host-required confirmation point, private input, system-wide elevation, account sign-in, interruption, target change, or missing authority.
 
 ## Execution and token budget
 

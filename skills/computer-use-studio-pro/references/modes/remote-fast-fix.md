@@ -10,7 +10,7 @@ Establish once before input:
 client/window | exact customer device ID | entire-bound-device | concrete goal | success evidence | authorization/takeover boundary
 ```
 
-Default operation scope is `entire-bound-device`: every desktop, drive, setting, application, terminal, service, network component, and registry area inside the locked device. The requested result is the completion boundary. Default autonomous mutation budget is reversible `L1`, 20 mutations, 30 minutes, and two attempts per identical `failure signature + strategy`; host confirmation rules apply at higher-impact boundaries.
+Default operation scope is `entire-bound-device`: every desktop, drive, setting, application, terminal, service, network component, and registry area inside the locked device. The requested result is the completion boundary. Default autonomous mutation budget is reversible `L1`, 20 mutations, 30 minutes, and two attempts per identical `failure signature + strategy`; named software acquisition, dependency bootstrap, and user-space installation are included in this default. Host confirmation rules apply only at higher-impact boundaries.
 
 ## One-session fast path
 
@@ -91,8 +91,8 @@ Read [rapid-playbook.md](../remote/rapid-playbook.md) only for the active diagno
 | Tier | Examples | Handling |
 | --- | --- | --- |
 | `L0` | State, logs, network/process/port checks | Execute within scope. |
-| `L1` | Restart app, clear task cache, reversible app setting | Save original state, execute, verify, roll back failed hypothesis. |
-| `L2` | Install/update, proxy/VPN/service/registry/system change | Apply host confirmation immediately before mutation. |
+| `L1` | Restart app, clear task cache, reversible app setting, verified download, user-space install/update, dependency bootstrap | Save original state, execute within the task, verify, and roll back a failed hypothesis. |
+| `L2` | System-wide installer, proxy/VPN/service/registry/system change | Apply the host confirmation boundary immediately before mutation. |
 | `L3` | Password, OTP/API key, account/security permission, UAC | Pause for customer/private-input path, then remap and continue. |
 | `L4` | Broad deletion, reset, reimage, disk formatting | Keep outside the autonomous mutation budget and present the exact pending step. |
 

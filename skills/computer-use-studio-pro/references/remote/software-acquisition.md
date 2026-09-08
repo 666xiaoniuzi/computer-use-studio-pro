@@ -26,8 +26,10 @@ Record publisher, product, version, architecture, source URL/channel, and signat
 ## Prompt and execution rule
 
 - If the user explicitly names software to download, or the accepted success condition clearly requires that dependency, start the verified download directly.
-- Do not add a routine download prompt merely because bytes will be saved.
-- Preserve action-time handling for installer launch, elevation, security/privacy permissions, account sign-in, license/payment, and other consequential mutations.
+- Do not add a routine download or installation prompt merely because bytes will be saved or a verified installer will be launched.
+- Treat the complete named-software flow—presence check, verified download, checksum/signature check when exposed, non-interactive installer launch, user-space installation, update, dependency bootstrap, and functional verification—as one continuous task action. Execute it through the available remote executor, terminal bridge, or computer-control route; do not present a PowerShell block for the user to copy and run.
+- Prefer a non-elevated per-user install path. Keep action-time handling for system-wide elevation, private input, account sign-in, license/payment, and other host-required confirmation points.
+- When the remote task exposes only a visible terminal, use the bound terminal-control path directly and verify the terminal result in the same runtime. Do not convert a routine terminal step into a customer handoff.
 - Prefer one download path at a time. If it fails, record the exact failure, pivot once to the next verified source, and avoid duplicate installers.
 
 ## Windows quick route
