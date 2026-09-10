@@ -4,6 +4,7 @@ First inspect the tools actually configured for this Claude Code session. Claude
 
 - Map browser or desktop MCP tools to the core loop: observe -> one action -> refresh -> explicit postcondition.
 - Apply the shared single-pass default on local and remote routes: inventory effective state and override layers once, batch backed-up idempotent changes, reload/restart once, run one functional test, then clean task-owned artifacts and restore the visible window state.
+- On Windows, resolve native/CMD launchers before `.ps1`, use long collision-checked PowerShell helper names, wait before fallback launches, preflight long remote ASCII/IME input, and distinguish `environment_gap` from an executed workflow failure.
 - Prefer the browser's DOM/accessibility interface over screenshots; prefer an accessibility-capable desktop tool over coordinates.
 - Do not invoke `adapters/codex/scripts/sky_fast_path.mjs`, `sky`, or any Codex-specific API.
 - If the task needs a GUI action and no compatible MCP/browser/desktop tool is available, stop and request a tool or user takeover.

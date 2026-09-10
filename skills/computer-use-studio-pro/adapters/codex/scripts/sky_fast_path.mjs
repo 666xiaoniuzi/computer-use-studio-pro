@@ -27,6 +27,7 @@ const KEYBOARD_BURST_KEYS = new Set([
 ]);
 const MAX_KEYBOARD_BURST_TEXT_CHARS = 4096;
 const MAX_REMOTE_CANVAS_TEXT_CHARS = 2048;
+const DEFAULT_REMOTE_ASCII_PREFLIGHT_THRESHOLD = 160;
 const EDITABLE_FOCUS = /(?:\b(?:edit|textbox|text[ -]?field|textarea|text[ -]?area|search(?:box|[ -]?field)?|input|combo[ -]?box|axtextfield|axtextarea|axsearchfield)\b|编辑|文本框|文本区域|搜索框|输入框|组合框)/iu;
 
 /** Synchronous capability negotiation: it adds no Computer Use call. */
@@ -146,6 +147,79 @@ export async function warmUpRuntime(sky) {
   } catch (error) {
     return { ok: false, sky_calls: 1, duration_ms: Date.now() - started, reason: compactText(String(error?.message ?? error), 160) };
   }
+}
+
+const WINDOWS_CLI_EXTENSION_RANK = Object.freeze({ ".exe": 0, ".com": 1, ".cmd": 2, ".bat": 3, "": 4, ".ps1": 9 });
+
+/**
+ * Select a Windows CLI launcher without accidentally choosing a PowerShell
+ * shim that can be blocked by the current execution policy. Explicit native,
+ * COM, and CMD launchers take priority; PS1 remains the last candidate.
+ */
+export function selectWindowsCliLauncher(candidates, options = {}) {
+  const values = [...new Set((Array.isArray(candidates) ? candidates : [candidates])
+    .map((item) => String(item ?? "").trim()).filter(Boolean))];
+  if (values.length === 0) throw new Error("Windows CLI selection requires at least one candidate");
+  const explicitPath = String(options.explicitPath ?? "").trim();
+  const ranked = values.map((path, index) => {
+    const leaf = path.replaceAll("/", "\\").split("\\").at(-1) ?? path;
+    const match = leaf.match(/(\.[A-Za-z0-9]+)$/u);
+    const extension = String(match?.[1] ?? "").toLowerCase();
+    const rank = WINDOWS_CLI_EXTENSION_RANK[extension] ?? 6;
+    return { path, extension, rank, index };
+  }).sort((a, b) => {
+    if (explicitPath && a.path.toLowerCase() === explicitPath.toLowerCase()) return -1;
+    if (explicitPath && b.path.toLowerCase() === explicitPath.toLowerCase()) return 1;
+    return a.rank - b.rank || a.index - b.index;
+  });
+  const selected = ranked[0];
+  return Object.freeze({
+    path: selected.path,
+    extension: selected.extension || null,
+    reason: explicitPath && selected.path.toLowerCase() === explicitPath.toLowerCase()
+      ? "explicit-path"
+      : selected.extension === ".ps1" ? "powershell-shim-only" : "execution-policy-compatible",
+    candidates: Object.freeze(ranked.map((item) => Object.freeze({ path: item.path, extension: item.extension || null, rank: item.rank }))),
+  });
+}
+
+const TASK_OUTCOME_STATUSES = new Set(["verified", "environment_gap", "workflow_failure", "unknown"]);
+
+/** Keep a missing dependency separate from a failure in the automation path. */
+export function normalizeTaskOutcome(input = {}) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Task outcome must be an object");
+  const explicit = String(input.status ?? input.outcome_class ?? "").trim().toLowerCase().replaceAll("-", "_");
+  let status;
+  if (TASK_OUTCOME_STATUSES.has(explicit)) status = explicit;
+  else if (input.verified === true) status = "verified";
+  else if (input.environment_gap === true || input.dependency_present === false || input.present === false
+      || ["missing_dependency", "missing-command", "missing_command", "environment"].includes(String(input.issue_type ?? "").trim().toLowerCase())) {
+    status = "environment_gap";
+  } else if (input.ok === true) status = "verified";
+  else if (input.ok === false || input.error != null) status = "workflow_failure";
+  else status = "unknown";
+  return Object.freeze({
+    status,
+    verified: status === "verified",
+    needs_environment_repair: status === "environment_gap",
+    workflow_failed: status === "workflow_failure",
+    reason: input.reason ?? input.error ?? null,
+    source: input,
+  });
+}
+
+export function summarizeTaskOutcomes(items = []) {
+  if (!Array.isArray(items)) throw new Error("Task outcome summary requires an array");
+  const outcomes = items.map(normalizeTaskOutcome);
+  const counts = Object.fromEntries([...TASK_OUTCOME_STATUSES].map((status) => [status, outcomes.filter((item) => item.status === status).length]));
+  return Object.freeze({
+    total: outcomes.length,
+    counts: Object.freeze(counts),
+    all_verified: outcomes.length > 0 && counts.verified === outcomes.length,
+    workflow_failed: counts.workflow_failure > 0,
+    environment_repairs_needed: counts.environment_gap,
+    outcomes: Object.freeze(outcomes),
+  });
 }
 
 const ASSIGNMENT_SECRET = /(?:\b(password|passwd|secret|token|cookie|authorization|api[_-]?key|otp|one[- ]?time code)\b|(密码|口令|令牌|密钥|验证码))\s*[:=：]\s*(?:"[^"]*"|'[^']*'|[^\s,;，；]+)/gi;
@@ -852,6 +926,118 @@ function remoteCanvasTextActions(text, options = {}) {
   return actions;
 }
 
+/** Decide locally whether a long opaque-canvas ASCII payload needs an IME probe. */
+export function shouldPreflightRemoteAsciiInput(text, options = {}) {
+  const value = String(text ?? "");
+  const threshold = Number(options.preflightThreshold ?? DEFAULT_REMOTE_ASCII_PREFLIGHT_THRESHOLD);
+  if (!Number.isInteger(threshold) || threshold < 32 || threshold > MAX_REMOTE_CANVAS_TEXT_CHARS) {
+    throw new Error(`preflightThreshold must be an integer from 32 to ${MAX_REMOTE_CANVAS_TEXT_CHARS}`);
+  }
+  return options.asciiInputVerified !== true
+    && value.length >= threshold
+    && !/[^\x20-\x7e]/u.test(value);
+}
+
+/**
+ * Verify the remote keyboard/IME mode with a short ASCII command before a long
+ * opaque-canvas payload. A failed first probe toggles the IME once and retries;
+ * the caller supplies a visual or clipboard-backed verifier for the marker.
+ */
+export async function runRemoteAsciiInputPreflight(sky, observation, options = {}) {
+  validateObservation(observation);
+  if (!sky || typeof sky.press_key !== "function" || typeof sky.get_window_state !== "function") {
+    throw new Error("Remote ASCII preflight requires press_key and get_window_state");
+  }
+  if (options.transactionClass !== "local-reversible") {
+    throw new Error("Remote ASCII preflight requires transactionClass: 'local-reversible'");
+  }
+  if (!TRANSACTION_RISKS.has(options.risk ?? "reversible")) {
+    throw new Error("Remote ASCII preflight is limited to low-risk or reversible work");
+  }
+  if (options.stabilityConfirmed !== true || options.focusVerified !== true) {
+    throw new Error("Remote ASCII preflight requires stabilityConfirmed and focusVerified");
+  }
+  if (options.confirmationBoundary !== false || options.mutationAuthorized !== true) {
+    throw new Error("Remote ASCII preflight requires no confirmation boundary and authorized input-line replacement");
+  }
+  if (typeof options.verify !== "function") throw new Error("Remote ASCII preflight requires a marker verifier");
+  const probeText = String(options.probeText ?? "Write-Output '__CUSPRO_ASCII_OK__'");
+  if (probeText.length < 4 || probeText.length > 96 || /[^\x20-\x7e]/u.test(probeText)) {
+    throw new Error("Remote ASCII preflight probe must contain 4-96 printable ASCII characters");
+  }
+  const maxAttempts = Number(options.maxAttempts ?? 2);
+  if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 2) {
+    throw new Error("Remote ASCII preflight maxAttempts must be 1 or 2");
+  }
+  const toggleKey = String(options.toggleKey ?? "Shift_L");
+  if (!new Set(["Shift_L", "Shift_R"]).has(toggleKey)) throw new Error("Remote ASCII preflight toggleKey must be Shift_L or Shift_R");
+  const started = Date.now();
+  const metrics = { actions: 0, observations: 0, sky_calls: 0, duration_ms: 0, ime_toggles: 0 };
+  let state = observation;
+  let lastReason = "ASCII marker was not verified";
+  if (options.focusPoint) {
+    if (typeof sky.click !== "function") throw new Error("Remote ASCII preflight focusPoint requires click");
+    const point = screenshotPoint(state, options.focusPoint.x, options.focusPoint.y, options.focusPoint.screenshotId);
+    await sky.click({ window: state.window, ...point });
+    metrics.actions += 1;
+    metrics.sky_calls += 1;
+  }
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const actions = remoteCanvasTextActions(probeText, {
+      ...options,
+      clearExisting: true,
+      submitKey: options.submitKey ?? "Return",
+      remoteDeviceId: options.remoteDeviceId,
+    });
+    for (const action of actions) {
+      await sky.press_key({ window: state.window, key: action.args.key });
+      metrics.actions += 1;
+      metrics.sky_calls += 1;
+    }
+    state = await sky.get_window_state({
+      window: state.window,
+      include_screenshot: options.include_screenshot ?? true,
+      include_text: options.include_text ?? true,
+    });
+    metrics.observations += 1;
+    metrics.sky_calls += 1;
+    const checked = await options.verify(state, { attempt, probeText, marker: "__CUSPRO_ASCII_OK__" });
+    const ok = checked === true || checked?.ok === true;
+    if (ok) {
+      metrics.duration_ms = Date.now() - started;
+      return {
+        ok: true,
+        verified: true,
+        outcome: "verified",
+        attempts: attempt,
+        ime_toggled: metrics.ime_toggles > 0,
+        state,
+        summary: compactState(state, options),
+        metrics,
+      };
+    }
+    lastReason = checked?.reason ?? lastReason;
+    if (attempt < maxAttempts) {
+      await sky.press_key({ window: state.window, key: toggleKey });
+      metrics.actions += 1;
+      metrics.sky_calls += 1;
+      metrics.ime_toggles += 1;
+    }
+  }
+  metrics.duration_ms = Date.now() - started;
+  return {
+    ok: false,
+    verified: false,
+    outcome: "failed",
+    attempts: maxAttempts,
+    ime_toggled: metrics.ime_toggles > 0,
+    reason: lastReason,
+    state,
+    summary: compactState(state, options),
+    metrics,
+  };
+}
+
 /** Select the lower-call remote text transport without issuing any tool call. */
 export function selectRemoteTextTransport(text, options = {}) {
   if (typeof text !== "string" || text.length === 0) throw new Error("Remote text requires a non-empty string");
@@ -1100,6 +1286,7 @@ export function createPersistentWindowSession(sky, options = {}) {
   let checkpointError = null;
   let boundLabeledDeviceIds = null;
   let lastObservationAt = null;
+  let asciiInputVerifiedEpoch = null;
   let playbookContext = null;
   let playbookMatch = null;
   let playbookRecording = null;
@@ -1805,11 +1992,66 @@ export function createPersistentWindowSession(sky, options = {}) {
     });
   }
 
+  async function prepareRemoteAsciiInput(preflightOptions = {}) {
+    if (mode !== "remote-fast-fix") throw new Error("prepareRemoteAsciiInput applies only to remote-fast-fix sessions");
+    if (!initialized) await initialObserve();
+    assertInputAllowed(state);
+    if (asciiInputVerifiedEpoch === layoutEpoch && preflightOptions.force !== true) {
+      return withSessionMeta({
+        ok: true,
+        verified: true,
+        outcome: "verified",
+        attempts: 0,
+        ime_toggled: false,
+        state,
+        summary: compactState(state, preflightOptions),
+        metrics: { actions: 0, observations: 0, sky_calls: 0, duration_ms: 0, ime_toggles: 0 },
+      }, {}, { reused_ascii_preflight: true });
+    }
+    const result = await runRemoteAsciiInputPreflight(sky, state, {
+      ...preflightOptions,
+      remoteDeviceId,
+    });
+    const changes = result.state?.window ? acceptState(result.state) : {};
+    if (result.verified) asciiInputVerifiedEpoch = layoutEpoch;
+    return withSessionMeta(result, changes, { reused_ascii_preflight: false });
+  }
+
   async function remoteCanvasText(text, canvasOptions = {}) {
     if (mode !== "remote-fast-fix") throw new Error("remoteCanvasText applies only to remote-fast-fix sessions");
     if (!initialized) await initialObserve();
     assertInputAllowed(state);
-    const focusPoint = canvasOptions.focusPoint;
+    const needsPreflight = shouldPreflightRemoteAsciiInput(text, canvasOptions)
+      && asciiInputVerifiedEpoch !== layoutEpoch;
+    let asciiPreflight = null;
+    if (needsPreflight) {
+      if (!canvasOptions.imePreflight || typeof canvasOptions.imePreflight !== "object") {
+        const error = new Error("Long remote ASCII input requires imePreflight options or asciiInputVerified: true");
+        error.code = "REMOTE_ASCII_PREFLIGHT_REQUIRED";
+        throw error;
+      }
+      asciiPreflight = await prepareRemoteAsciiInput({
+        ...canvasOptions.imePreflight,
+        focusPoint: canvasOptions.imePreflight.focusPoint ?? canvasOptions.focusPoint,
+        transactionClass: canvasOptions.transactionClass ?? "local-reversible",
+        risk: canvasOptions.risk ?? "reversible",
+        stabilityConfirmed: canvasOptions.stabilityConfirmed,
+        focusVerified: canvasOptions.focusVerified,
+        confirmationBoundary: canvasOptions.confirmationBoundary,
+        mutationAuthorized: canvasOptions.mutationAuthorized,
+      });
+      if (!asciiPreflight.verified) {
+        const error = new Error(`Remote ASCII preflight failed: ${asciiPreflight.reason ?? "marker mismatch"}`);
+        error.code = "REMOTE_ASCII_PREFLIGHT_FAILED";
+        error.preflight = asciiPreflight;
+        throw error;
+      }
+    } else if (canvasOptions.asciiInputVerified === true) {
+      asciiInputVerifiedEpoch = layoutEpoch;
+    }
+    // The successful preflight leaves the same terminal focused, so do not
+    // click it a second time before the real payload.
+    const focusPoint = asciiPreflight ? null : canvasOptions.focusPoint;
     const leaseAction = focusPoint
       ? { method: "click", args: { x: focusPoint.x, y: focusPoint.y, screenshotId: focusPoint.screenshotId } }
       : { method: "press_key", args: { key: "space" } };
@@ -1819,6 +2061,7 @@ export function createPersistentWindowSession(sky, options = {}) {
     const priorState = state;
     const result = await runRemoteCanvasTextBurst(sky, state, text, {
       ...canvasOptions,
+      focusPoint,
       remoteDeviceId,
       transactionClass: canvasOptions.transactionClass ?? "local-reversible",
       visualVerificationRequired: canvasOptions.visualVerificationRequired ?? true,
@@ -1839,6 +2082,11 @@ export function createPersistentWindowSession(sky, options = {}) {
       input_lease: inputLease,
       single_terminal_screenshot: true,
       transport: "key-events",
+      ascii_preflight: asciiPreflight ? {
+        attempts: asciiPreflight.attempts,
+        ime_toggled: asciiPreflight.ime_toggled,
+        reused: asciiPreflight.reused_ascii_preflight === true,
+      } : null,
     });
   }
 
@@ -2338,6 +2586,7 @@ export function createPersistentWindowSession(sky, options = {}) {
       layout_epoch: layoutEpoch,
       semantic_epoch: semanticEpoch,
       pending_visual_refresh: pendingVisualRefresh,
+      ascii_input_verified_epoch: asciiInputVerifiedEpoch,
       observation_age_ms: observationAgeMs(),
       observation_lease_ms: observationLeaseMs,
       authorization_status: authorizationStatus,
@@ -2379,6 +2628,7 @@ export function createPersistentWindowSession(sky, options = {}) {
     transaction,
     keyboardBurst,
     remoteText,
+    prepareRemoteAsciiInput,
     remoteCanvasText,
     remoteUnicodeText,
     noteAttempt,
@@ -3140,15 +3390,100 @@ export async function waitForStableReadyState(sky, window, expect, options = {})
 }
 
 /**
+ * Launch at most once per route. The fallback is held until the primary wait
+ * expires, followed by one last race-closing window check, so a slow primary
+ * launch does not open a duplicate terminal or Run dialog.
+ */
+export async function launchOnceAndAwaitWindow(sky, options = {}) {
+  if (!sky || typeof sky.list_windows !== "function") throw new Error("Deduplicated launch requires sky.list_windows");
+  if (typeof options.matchWindow !== "function") throw new Error("Deduplicated launch requires matchWindow");
+  const primaryLaunch = options.primaryLaunch;
+  const fallbackLaunch = options.fallbackLaunch;
+  if (typeof primaryLaunch !== "function") throw new Error("Deduplicated launch requires primaryLaunch");
+  if (fallbackLaunch != null && typeof fallbackLaunch !== "function") throw new Error("fallbackLaunch must be a function");
+  const started = Date.now();
+  const metrics = { list_calls: 0, launch_calls: 0, fallback_calls: 0, duration_ms: 0 };
+  const find = async () => {
+    const windows = await sky.list_windows();
+    metrics.list_calls += 1;
+    if (!Array.isArray(windows)) throw new Error("sky.list_windows must return an array");
+    const matches = windows.filter(options.matchWindow);
+    if (matches.length > 1) throw new Error(`Expected at most one launch target window; found ${matches.length}`);
+    return matches[0] ?? null;
+  };
+  const existing = await find();
+  if (existing) {
+    metrics.duration_ms = Date.now() - started;
+    return { ok: true, window: existing, route: "existing-window", primary_launched: false, fallback_launched: false, metrics };
+  }
+  await primaryLaunch();
+  metrics.launch_calls += 1;
+  const primaryWait = await waitForWindowListState(sky, options.matchWindow, {
+    attempts: options.primaryAttempts ?? 20,
+    intervalMs: options.intervalMs ?? 75,
+  });
+  metrics.list_calls += primaryWait.metrics.list_calls;
+  if (primaryWait.ok) {
+    metrics.duration_ms = Date.now() - started;
+    return { ok: true, window: primaryWait.matches[0], route: "primary", primary_launched: true, fallback_launched: false, metrics };
+  }
+  // Close the race between the final primary poll and fallback dispatch.
+  const latePrimary = await find();
+  if (latePrimary) {
+    metrics.duration_ms = Date.now() - started;
+    return { ok: true, window: latePrimary, route: "primary-late", primary_launched: true, fallback_launched: false, metrics };
+  }
+  if (!fallbackLaunch) {
+    metrics.duration_ms = Date.now() - started;
+    return { ok: false, window: null, route: "primary-timeout", primary_launched: true, fallback_launched: false, metrics };
+  }
+  await fallbackLaunch();
+  metrics.launch_calls += 1;
+  metrics.fallback_calls += 1;
+  const fallbackWait = await waitForWindowListState(sky, options.matchWindow, {
+    attempts: options.fallbackAttempts ?? options.primaryAttempts ?? 20,
+    intervalMs: options.intervalMs ?? 75,
+  });
+  metrics.list_calls += fallbackWait.metrics.list_calls;
+  metrics.duration_ms = Date.now() - started;
+  return {
+    ok: fallbackWait.ok,
+    window: fallbackWait.matches[0] ?? null,
+    route: fallbackWait.ok ? "fallback" : "fallback-timeout",
+    primary_launched: true,
+    fallback_launched: true,
+    metrics,
+  };
+}
+
+/**
  * Launch, bind, foreground, and prove readiness before the first input. The
  * caller must provide a meaningful `expect` whenever the app exposes one.
  */
 export async function launchAndAwaitReady(sky, appId, options = {}) {
   const started = Date.now();
   const startupMetrics = { actions: 0, observations: 0, sky_calls: 0, duration_ms: 0, observation_chars: 0, compact_chars: 0, screenshot_regions: 0 };
-  await sky.launch_app({ app: appId });
-  startupMetrics.sky_calls += 1;
-  const returnedWindow = await pollForUniqueWindow(sky, appId, { ...options, metrics: startupMetrics });
+  let returnedWindow;
+  let launchRoute = "primary";
+  if (typeof sky.list_windows === "function") {
+    const windowMatcher = options.windowMatcher ?? ((candidate) => String(candidate?.app ?? "") === String(appId));
+    const launched = await launchOnceAndAwaitWindow(sky, {
+      matchWindow: windowMatcher,
+      primaryLaunch: () => sky.launch_app({ app: appId }),
+      fallbackLaunch: options.fallbackLaunch,
+      primaryAttempts: options.launchAttempts ?? options.attempts,
+      fallbackAttempts: options.fallbackAttempts,
+      intervalMs: options.launchIntervalMs ?? options.intervalMs,
+    });
+    startupMetrics.sky_calls += launched.metrics.list_calls + launched.metrics.launch_calls;
+    launchRoute = launched.route;
+    if (!launched.ok) throw new Error("Target window did not appear within the bounded primary/fallback launch budget");
+    returnedWindow = launched.window;
+  } else {
+    await sky.launch_app({ app: appId });
+    startupMetrics.sky_calls += 1;
+    returnedWindow = await pollForUniqueWindow(sky, appId, { ...options, metrics: startupMetrics });
+  }
   const window = await sky.get_window({ id: returnedWindow.id, app: returnedWindow.app });
   startupMetrics.sky_calls += 1;
   if (options.activate !== false) {
@@ -3158,6 +3493,7 @@ export async function launchAndAwaitReady(sky, appId, options = {}) {
   const ready = await waitForStableReadyState(sky, window, options.expect, options);
   mergeMetrics(ready.metrics, startupMetrics);
   ready.window = ready.state?.window ?? window;
+  ready.launch_route = launchRoute;
   const needsStrictPostActivation = options.rebindAfterReady === true
     || options.strictPostActivation === true
     || options.requireFocusedElement === true;
@@ -3263,10 +3599,22 @@ export async function selfTest() {
   const unknownClipboardCostSelection = selectRemoteTextTransport("OpenAI", {
     transportVerified: true, clipboard: { async write() {} },
   });
+  const npmLauncher = selectWindowsCliLauncher([
+    "C:\\Program Files\\nodejs\\npm.ps1",
+    "C:\\Program Files\\nodejs\\npm.cmd",
+  ]);
+  const outcomeSummary = summarizeTaskOutcomes([
+    { verified: true },
+    { ok: true, dependency_present: false, reason: "claude command absent" },
+    { ok: false, error: "automation assertion failed" },
+  ]);
   const exactCaseState = { window, accessibility: { document_text: "OpenAI" }, screenshots: [] };
   if (capsKeys.join(",") !== "a,Shift_L+a"
       || clipboardSelection.transport !== "verified-clipboard" || clipboardSelection.reason !== "fewer-sky-calls"
       || keySelection.transport !== "key-events" || unknownClipboardCostSelection.transport !== "key-events"
+      || npmLauncher.path !== "C:\\Program Files\\nodejs\\npm.cmd" || npmLauncher.reason !== "execution-policy-compatible"
+      || outcomeSummary.counts.verified !== 1 || outcomeSummary.counts.environment_gap !== 1
+      || outcomeSummary.counts.workflow_failure !== 1 || !outcomeSummary.workflow_failed
       || !expectationResult(exactCaseState, { documentEquals: "OpenAI" }).ok
       || expectationResult(exactCaseState, { documentEquals: "openai" }).ok
       || !expectationResult(exactCaseState, { documentEquals: "openai", caseSensitive: false }).ok) {
@@ -3420,6 +3768,21 @@ export async function selfTest() {
       || sessionCanvasResult.transport !== "key-events" || sessionCanvasResult.authorization_check_mode !== "session-lease") {
     throw new Error("persistent remoteCanvasText session self-test failed");
   }
+  const longCanvasResult = await sessionCanvas.remoteCanvasText("x".repeat(160), {
+    risk: "low",
+    stabilityConfirmed: true,
+    focusVerified: true,
+    confirmationBoundary: false,
+    mutationAuthorized: true,
+    imePreflight: {
+      probeText: "echo ASCII_OK",
+      verify: () => true,
+    },
+  });
+  if (!longCanvasResult.ok || longCanvasResult.ascii_preflight?.attempts !== 1
+      || sessionCanvas.snapshot().ascii_input_verified_epoch !== sessionCanvas.snapshot().layout_epoch) {
+    throw new Error("persistent automatic ASCII preflight self-test failed");
+  }
   const result = await fillEditable(mockSky, observation, { element_index: 13, value: "hello", strategy: "keyboard", risk: "reversible" });
   if (!result.ok || result.completed !== 3 || result.metrics.sky_calls !== 6 || !result.summary.document_text.includes("hello")) {
     throw new Error("verified transaction self-test failed");
@@ -3494,6 +3857,38 @@ export async function selfTest() {
       || canvasBurst.metrics.observations !== 1 || canvasBurst.metrics.screenshot_regions !== 1
       || canvasStateReads !== 1 || canvasKeys.join(",") !== "Control_L+a,Backspace,Shift_L+a,b,minus,1,Return") {
     throw new Error("single-terminal-screenshot remote canvas burst self-test failed");
+  }
+  let preflightReads = 0;
+  const preflightKeys = [];
+  const preflightSky = {
+    async press_key({ key }) { preflightKeys.push(key); },
+    async get_window_state(input) {
+      preflightReads += 1;
+      return {
+        window,
+        accessibility: { focused_element: "", document_text: "", tree: "" },
+        screenshots: input.include_screenshot ? [{ id: `preflight-${preflightReads}`, width: 1280, height: 720, zIndex: 1 }] : [],
+      };
+    },
+  };
+  const preflight = await runRemoteAsciiInputPreflight(preflightSky, canvasObservation, {
+    remoteDeviceId,
+    transactionClass: "local-reversible",
+    risk: "low",
+    stabilityConfirmed: true,
+    focusVerified: true,
+    confirmationBoundary: false,
+    mutationAuthorized: true,
+    probeText: "echo ASCII_OK",
+    maxAttempts: 2,
+    verify: (_state, details) => details.attempt === 2,
+  });
+  if (!preflight.ok || !preflight.verified || preflight.attempts !== 2 || !preflight.ime_toggled
+      || preflight.metrics.ime_toggles !== 1 || preflightReads !== 2
+      || preflightKeys.filter((key) => key === "Shift_L").length !== 1
+      || !shouldPreflightRemoteAsciiInput("x".repeat(160))
+      || shouldPreflightRemoteAsciiInput("x".repeat(160), { asciiInputVerified: true })) {
+    throw new Error("remote ASCII IME preflight self-test failed");
   }
   let deviceIdPayloadRejected = false;
   try {
@@ -3625,6 +4020,26 @@ export async function selfTest() {
   let invalidWindowPollRejected = false;
   try { await waitForWindowListState(windowListSky, () => true, { attempts: 1, intervalMs: -1 }); } catch { invalidWindowPollRejected = true; }
   if (!invalidWindowPollRejected) throw new Error("window-list wait accepted a negative interval");
+  let primaryLaunches = 0;
+  let fallbackLaunches = 0;
+  let launchListReads = 0;
+  const deduplicatedLaunch = await launchOnceAndAwaitWindow({
+    async list_windows() {
+      launchListReads += 1;
+      return launchListReads >= 3 ? [window] : [];
+    },
+  }, {
+    matchWindow: (candidate) => candidate.id === window.id,
+    primaryLaunch: async () => { primaryLaunches += 1; },
+    fallbackLaunch: async () => { fallbackLaunches += 1; },
+    primaryAttempts: 1,
+    fallbackAttempts: 1,
+    intervalMs: 0,
+  });
+  if (!deduplicatedLaunch.ok || deduplicatedLaunch.route !== "primary-late"
+      || primaryLaunches !== 1 || fallbackLaunches !== 0 || launchListReads !== 3) {
+    throw new Error("deduplicated launch race-closure self-test failed");
+  }
   const refreshed = await actAndRefresh(mockSky, observation, { method: "type_text", args: { text: "checked" } }, { expect: { includes: "checked" } });
   if (!String(refreshed.accessibility?.document_text).includes("checked")) {
     throw new Error("act-and-refresh postcondition self-test failed");

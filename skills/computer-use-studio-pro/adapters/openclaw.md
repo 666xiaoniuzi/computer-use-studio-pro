@@ -4,6 +4,7 @@ Use the current OpenClaw session's approved skills and tools for browser, deskto
 
 - Map the core loop to the available tool semantics: current observation -> one bounded action -> refreshed observation -> explicit postcondition.
 - Apply the shared single-pass default on local and remote routes: inventory effective state and override layers once, batch backed-up idempotent changes, reload/restart once, run one functional test, then clean task-owned artifacts and restore the visible window state.
+- On Windows, resolve native/CMD launchers before `.ps1`, use long collision-checked PowerShell helper names, wait before fallback launches, preflight long remote ASCII/IME input, and distinguish `environment_gap` from an executed workflow failure.
 - Keep browser and desktop work in the same host session where possible; do not recreate a controller after every step.
 - Prefer DOM/accessibility and direct value setting before visual coordinates. Read the selected surface fragment for platform details.
 - Do not use Codex-specific `sky` or the Node helper. Use shared Python helpers only when local execution is enabled and appropriate.

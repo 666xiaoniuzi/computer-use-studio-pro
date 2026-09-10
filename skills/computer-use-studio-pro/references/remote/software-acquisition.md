@@ -16,6 +16,8 @@ Resolve product mismatches before spending download time. In particular, a codin
 
 Return only secret presence or fingerprints. When configuration is part of the task, collect every effective override layer in this same pass, then apply one backed-up idempotent batch, reload/restart once, and run one real end-to-end check.
 
+On Windows, enumerate all launcher candidates and choose `.exe`/`.com`/`.cmd`/`.bat` before `.ps1`; this keeps npm and similar tools independent of the current PowerShell script policy. Use collision-resistant `__Cusp_*` names for batch helpers and preflight them with `Get-Command`. Mark an absent command/package as `environment_gap`, then repair it; use `workflow_failure` only when the selected execution path actually fails.
+
 ## Source order
 
 1. Reuse a healthy installed copy when it satisfies the task.
@@ -35,6 +37,7 @@ Record publisher, product, version, architecture, source URL/channel, and signat
 - Prefer a non-elevated per-user install path. Keep action-time handling for system-wide elevation, private input, account sign-in, license/payment, and other host-required confirmation points.
 - When the remote task exposes only a visible terminal, use the bound terminal-control path directly and verify the terminal result in the same runtime. Do not convert a routine terminal step into a customer handoff.
 - Prefer one download path at a time. If it fails, record the exact failure, pivot once to the next verified source, and avoid duplicate installers.
+- Launch the primary installer/terminal route once, wait for the expected window, and perform one last list check before a fallback route. Do not open a terminal and the Run dialog for the same launch race.
 - Use a 20-minute soft decision budget for a routine fresh user-space installation. At the boundary, switch diagnostic strategy using the current failure signature instead of continuing the same interaction pattern.
 
 ## Windows quick route

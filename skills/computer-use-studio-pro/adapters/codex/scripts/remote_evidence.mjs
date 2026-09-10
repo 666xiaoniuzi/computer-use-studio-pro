@@ -3,6 +3,7 @@
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 
 import { enforceRuntimeGate, assertLicensed } from "./license_check.mjs";
 
@@ -29,6 +30,12 @@ const REQUEST_KINDS = new Set([
 
 const START_MARKER = "__CUSPRO_EVIDENCE_BEGIN__";
 const END_MARKER = "__CUSPRO_EVIDENCE_END__";
+const POWERSHELL_RESERVED_HELPERS = new Set([
+  "cd", "chdir", "cls", "copy", "del", "dir", "echo", "erase", "foreach", "ft", "fw", "gal", "gc", "gci",
+  "gm", "gp", "gps", "group", "gu", "gv", "iex", "ii", "kill", "ls", "md", "measure", "move", "ni", "pwd",
+  "r", "rd", "ren", "rm", "rmdir", "rv", "sc", "select", "set", "sleep", "sort", "start", "tee", "type", "where",
+  "write", "%", "?",
+]);
 
 function finiteMs(value, fallback) {
   const result = Number(value ?? fallback);
@@ -256,6 +263,40 @@ export function createRemoteEvidenceRouter(options = {}) {
   return Object.freeze({ capabilities, inspect, collect, performanceSnapshot });
 }
 
+/** Reject short/common PowerShell helper names before any remote batch runs. */
+export function validatePowerShellHelperNames(names) {
+  if (!Array.isArray(names) || names.length === 0) throw new Error("PowerShell helper validation requires a non-empty array");
+  const normalized = names.map((name) => String(name ?? "").trim());
+  const lowered = normalized.map((name) => name.toLowerCase());
+  for (const [index, name] of normalized.entries()) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]{7,80}$/u.test(name)) throw new Error(`Unsafe PowerShell helper name: ${name || "empty"}`);
+    if (POWERSHELL_RESERVED_HELPERS.has(lowered[index])) throw new Error(`PowerShell helper collides with a common command or alias: ${name}`);
+  }
+  if (new Set(lowered).size !== lowered.length) throw new Error("PowerShell helper names must be unique case-insensitively");
+  return Object.freeze(normalized);
+}
+
+/**
+ * Build an isolated, collision-resistant namespace and a Get-Command preflight
+ * for PowerShell batch helper functions.
+ */
+export function createPowerShellHelperNamespace(labels, options = {}) {
+  if (!Array.isArray(labels) || labels.length === 0) throw new Error("PowerShell helper namespace requires labels");
+  const safeLabels = labels.map((label) => {
+    const value = String(label ?? "").trim().replace(/[^A-Za-z0-9_]/gu, "_");
+    if (!/^[A-Za-z][A-Za-z0-9_]{0,31}$/u.test(value)) throw new Error(`Invalid PowerShell helper label: ${label}`);
+    return value;
+  });
+  const seed = String(options.seed ?? safeLabels.join("|"));
+  const nonce = createHash("sha256").update(seed).digest("hex").slice(0, 10);
+  const entries = safeLabels.map((label) => [label, `__Cusp_${nonce}_${label}`]);
+  const names = validatePowerShellHelperNames(entries.map(([, name]) => name));
+  const helpers = Object.freeze(Object.fromEntries(entries));
+  const quoted = names.map((name) => `'${name}'`).join(",");
+  const preflight = `$__CuspHelperNames_${nonce}=@(${quoted});$__CuspHelperCollisions_${nonce}=@($__CuspHelperNames_${nonce}|Where-Object{Get-Command -Name $_ -ErrorAction SilentlyContinue});if($__CuspHelperCollisions_${nonce}.Count -gt 0){throw ('PowerShell helper collision: '+($__CuspHelperCollisions_${nonce}-join ','))}`;
+  return Object.freeze({ nonce, helpers, names, preflight });
+}
+
 function psQuote(value) {
   return `'${String(value ?? "").replace(/'/gu, "''")}'`;
 }
@@ -283,10 +324,10 @@ function waitCondition(probe) {
   return present ? `(${expression})` : `(-not ${expression})`;
 }
 
-function probeStatement(probe) {
+function probeStatement(probe, context) {
   const id = psQuote(probe.id);
   const kind = psQuote(probe.kind);
-  const push = (expression) => `$r+=[pscustomobject]@{id=${id};kind=${kind};ok=$true;value=${expression};error=$null}`;
+  const push = (expression) => `& ${context.append} ${id} ${kind} $true (${expression}) $null`;
   let body;
   switch (probe.kind) {
     case "file":
@@ -313,7 +354,7 @@ function probeStatement(probe) {
       body = push(`[pscustomobject]@{path=${psQuote(probe.path)};version=(Get-Item -LiteralPath ${psQuote(probe.path)} -ErrorAction Stop).VersionInfo.FileVersion}`);
       break;
     case "system":
-      body = `$cv=Get-ItemProperty -LiteralPath 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion' -ErrorAction Stop;${push(`[pscustomobject]@{ProductName=$cv.ProductName;DisplayVersion=$cv.DisplayVersion;CurrentBuildNumber=$cv.CurrentBuildNumber;OSArchitecture=[System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()}`)}`;
+      body = `$${context.system}=Get-ItemProperty -LiteralPath 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion' -ErrorAction Stop;${push(`[pscustomobject]@{ProductName=$${context.system}.ProductName;DisplayVersion=$${context.system}.DisplayVersion;CurrentBuildNumber=$${context.system}.CurrentBuildNumber;OSArchitecture=[System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()}`)}`;
       break;
     case "dns":
       body = push(`@(Resolve-DnsName -Name ${psQuote(probe.host)} -ErrorAction Stop|Select-Object -First 20 Name,Type,IPAddress,NameHost)`);
@@ -327,17 +368,17 @@ function probeStatement(probe) {
       const timeoutMs = Number(probe.timeoutMs ?? 30_000);
       const intervalMs = Number(probe.intervalMs ?? 500);
       const condition = waitCondition(probe);
-      const loop = `$sw=[Diagnostics.Stopwatch]::StartNew();$ok=$false;while($sw.Elapsed.TotalMilliseconds -lt ${timeoutMs}){if(${condition}){$ok=$true;break};Start-Sleep -Milliseconds ${intervalMs}}`;
-      body = `${loop};$r+=[pscustomobject]@{id=${id};kind=${kind};ok=$ok;value=[pscustomobject]@{elapsedMs=[int]$sw.Elapsed.TotalMilliseconds};error=$(if($ok){$null}else{'timeout'})}`;
+      const loop = `$${context.stopwatch}=[Diagnostics.Stopwatch]::StartNew();$${context.waitOk}=$false;while($${context.stopwatch}.Elapsed.TotalMilliseconds -lt ${timeoutMs}){if(${condition}){$${context.waitOk}=$true;break};Start-Sleep -Milliseconds ${intervalMs}}`;
+      body = `${loop};& ${context.append} ${id} ${kind} $${context.waitOk} ([pscustomobject]@{elapsedMs=[int]$${context.stopwatch}.Elapsed.TotalMilliseconds}) $(if($${context.waitOk}){$null}else{'timeout'})`;
       break;
     }
     case "keyboard":
-      body = `$kv=[pscustomobject]@{capsLock=[Console]::CapsLock;numberLock=[Console]::NumberLock;layout=$null};try{$kv.layout=(Get-WinUserLanguageList -ErrorAction SilentlyContinue|Select-Object -First 1 -ExpandProperty LanguageTag)}catch{};${push("$kv")}`;
+      body = `$${context.keyboard}=[pscustomobject]@{capsLock=[Console]::CapsLock;numberLock=[Console]::NumberLock;layout=$null};try{$${context.keyboard}.layout=(Get-WinUserLanguageList -ErrorAction SilentlyContinue|Select-Object -First 1 -ExpandProperty LanguageTag)}catch{};${push(`$${context.keyboard}`)}`;
       break;
     default:
       throw new Error(`Unsupported Windows terminal probe: ${probe.kind}`);
   }
-  return `try{${body}}catch{$r+=[pscustomobject]@{id=${id};kind=${kind};ok=$false;value=$null;error=$_.Exception.Message}}`;
+  return `try{${body}}catch{& ${context.append} ${id} ${kind} $false $null $_.Exception.Message}`;
 }
 
 function normalizeProbes(probes) {
@@ -378,8 +419,20 @@ function normalizeProbes(probes) {
 /** Build one encoded PowerShell command that emits a marker-delimited JSON array. */
 export function buildWindowsRemoteEvidenceBatch(probes, options = {}) {
   const normalized = normalizeProbes(probes);
-  const statements = normalized.map(probeStatement).join(";");
-  const script = `$ProgressPreference='SilentlyContinue';$ErrorActionPreference='Stop';$r=@();${statements};Write-Output '${START_MARKER}';Write-Output ($r|ConvertTo-Json -Compress -Depth 6);Write-Output '${END_MARKER}'`;
+  const namespace = createPowerShellHelperNamespace(["AppendResult"], {
+    seed: options.helperSeed ?? JSON.stringify(normalized),
+  });
+  const resultVar = `__Cusp_${namespace.nonce}_Results`;
+  const context = {
+    append: namespace.helpers.AppendResult,
+    system: `__Cusp_${namespace.nonce}_System`,
+    stopwatch: `__Cusp_${namespace.nonce}_Stopwatch`,
+    waitOk: `__Cusp_${namespace.nonce}_WaitOk`,
+    keyboard: `__Cusp_${namespace.nonce}_Keyboard`,
+  };
+  const statements = normalized.map((probe) => probeStatement(probe, context)).join(";");
+  const helper = `function ${context.append}{param($Id,$Kind,$Ok,$Value,$ErrorText);$script:${resultVar}+=[pscustomobject]@{id=$Id;kind=$Kind;ok=[bool]$Ok;value=$Value;error=$ErrorText}}`;
+  const script = `&{$ProgressPreference='SilentlyContinue';$ErrorActionPreference='Stop';${namespace.preflight};$script:${resultVar}=@();${helper};${statements};Write-Output '${START_MARKER}';Write-Output ($script:${resultVar}|ConvertTo-Json -Compress -Depth 6);Write-Output '${END_MARKER}';Remove-Item -LiteralPath Function:\\${context.append} -ErrorAction SilentlyContinue}`;
   const encodedCommand = Buffer.from(script, "utf16le").toString("base64");
   const executable = String(options.executable ?? "powershell.exe");
   return Object.freeze({
@@ -389,6 +442,7 @@ export function buildWindowsRemoteEvidenceBatch(probes, options = {}) {
     command: `${executable} -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encodedCommand}`,
     startMarker: START_MARKER,
     endMarker: END_MARKER,
+    helperNamespace: namespace,
   });
 }
 
@@ -581,6 +635,9 @@ export async function selfTest() {
     { id: "proc-1", kind: "process", name: "demo" },
   ];
   const plan = buildWindowsRemoteEvidenceBatch(probes);
+  const helperNamespace = createPowerShellHelperNamespace(["AppendResult", "ReadState"], { seed: "self-test" });
+  let shortHelperRejected = false;
+  try { validatePowerShellHelperNames(["R"]); } catch { shortHelperRejected = true; }
   let terminalCalls = 0;
   const batch = await runWindowsRemoteEvidenceBatch({
     verified: true,
@@ -592,7 +649,10 @@ export async function selfTest() {
       };
     },
   }, probes);
-  if (!plan.command.includes("-EncodedCommand") || !batch.ok || !batch.complete || terminalCalls !== 1
+  if (!plan.command.includes("-EncodedCommand") || !plan.script.includes("Get-Command -Name")
+      || !plan.script.includes("function __Cusp_") || /(?:^|[;$])\$r(?:=|\+)/u.test(plan.script)
+      || helperNamespace.names.length !== 2 || !helperNamespace.names.every((name) => name.startsWith("__Cusp_"))
+      || !shortHelperRejected || !batch.ok || !batch.complete || terminalCalls !== 1
       || batch.metrics.terminal_batches !== 1 || batch.metrics.model_roundtrips !== 0) {
     throw new Error("single-batch Windows remote evidence self-test failed");
   }

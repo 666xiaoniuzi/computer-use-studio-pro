@@ -16,6 +16,8 @@ Keep the control runtime and target binding alive. Do not repeatedly initialize 
 
 Before the first mutation, run one read-only inventory batch. For command-line tools, API clients, model/provider selectors, and development environments, include command/version, process environment, application config, selector/launcher config, auth-store metadata, and startup/user environment precedence while returning only secret presence or fingerprints. Use this complete override map to avoid sequential trial edits.
 
+For Windows command work, rank native/CMD launchers before `.ps1` shims, create only collision-resistant PowerShell helper names after a `Get-Command` preflight, and label absent commands/dependencies as `environment_gap`. That state is a repair input, not an execution-path failure.
+
 Estimate the route before adding machinery. For one or two ordinary actions with no reusable semantic route, use the native controller unchanged. Do not create run state, tree deltas, or helper transactions that cannot remove a model roundtrip.
 
 ## G2-EXECUTE-VERIFY
@@ -23,7 +25,7 @@ Estimate the route before adding machinery. For one or two ordinary actions with
 1. Define one postcondition.
 2. Choose the route that reaches it with the fewest model roundtrips and state changes. Prefer a semantic file/API operation or direct value setting over GUI text replacement and click-select-delete-type sequences. Back up exact touched values, group idempotent changes into one eligible batch, reload/restart once, and perform one real end-to-end check. For a new user-facing file, derive the final filename from the task goal or internal title before creation, sanitize target-OS-invalid characters, keep the required extension, and include exact-name verification in the postcondition.
 3. For one action, combine the action and immediate refresh in the same execution call. For two or more deterministic reversible steps, normally use a locally verified transaction that refreshes and asserts after every action. The only single-terminal-refresh exception is an already-focused, stable, keyboard-only sequence accepted by `runKeyboardBurst`; it requires an explicit no-confirmation-boundary declaration plus final semantic verification or a terminal screenshot for model review.
-4. Use bounded local polling for loading or window launch so the model is not called between identical checks. Poll a state condition, not a blind long sleep.
+4. Use bounded local polling for loading or window launch so the model is not called between identical checks. Poll a state condition, not a blind long sleep. After a primary launch, wait and perform one final race-closing window-list check before any fallback launch.
 5. Verify with the cheapest reliable evidence and keep only the smallest useful output. Prefer structured results, exit codes, logs, or marker files. On an opaque remote canvas, bridge the real functional-test marker once rather than repeating a successful operation for accessibility text. In remote mode, routine/action refreshes collect text plus a runtime-retained screenshot in one state call; semantic changes never auto-trigger a second capture. Use an explicit semantic-only route for bounded polls and customer fast return.
 6. Continue on a match; otherwise enter G3.
 
