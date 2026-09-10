@@ -3,8 +3,8 @@
 Use only the computer, browser, accessibility, filesystem, or connector tools registered in the current Hermes installation. A Hermes skill supplies procedure; it does not install a desktop driver by itself.
 
 - Inspect the available tool names and map them to observe, act, refresh, and verify before starting.
-- Apply the shared single-pass default on local and remote routes: inventory effective state and override layers once, batch backed-up idempotent changes, reload/restart once, run one functional test, then clean task-owned artifacts and restore the visible window state.
-- On Windows, resolve native/CMD launchers before `.ps1`, use long collision-checked PowerShell helper names, wait before fallback launches, preflight long remote ASCII/IME input, and distinguish `environment_gap` from an executed workflow failure.
+- Select execution/acceptance from known capabilities with zero probes: semantic routes for deterministic work, GUI for interaction, and hybrid for desktop products. Then use the shared single-pass inventory/mutation/reload/test/cleanup flow.
+- On Windows, execute the selected native/CMD absolute path rather than a bare name. Submitted commands use an IME-independent verified clipboard bridge; key fallback needs epoch-bound ASCII proof. Grade evidence from `presence` through `user_flow` and keep environment gaps distinct.
 - Prefer semantic browser/accessibility operations. Treat screenshots and coordinates as short-lived observations.
 - Shared Python helpers in `scripts/` may be used when the host permits local execution; do not use the Codex-only Node helper.
 - For an explicit software or dependency request, treat download, verified installer launch, user-space installation, and functional verification as a continuous task action. Run it directly through the registered terminal/computer/remote-executor tools; do not ask the user to copy commands or approve routine steps.

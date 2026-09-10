@@ -13,13 +13,14 @@
 - Define a postcondition before acting; combine one input and its refresh in one execution call.
 - Screenshot IDs, element indexes, coordinates, focus, and crops expire. Refresh after navigation, modal/layout/focus/display changes, mismatch, recovery, or lease expiry.
 - Verified transactions contain at most three deterministic low-risk reversible steps and refresh/assert every step. Consequential work stays outside transactions.
-- Treat a remote device ID as target-lock metadata, never as ordinary application text. For an opaque remote canvas, avoid raw `type_text` until forwarding is verified; use the key-event burst for ASCII or the verified clipboard bridge for Unicode, with one terminal screenshot. Before a long ASCII burst, run the short marker/IME preflight and reuse its result only for the current layout epoch.
+- Treat a remote device ID as target-lock metadata. On an opaque canvas, submitted commands use the verified clipboard/terminal bridge; its per-batch markers reject stale output and signaled size limits trigger local chunking. Key-event command fallback requires an epoch-bound ASCII/IME proof. Ordinary fields retain the one-terminal-screenshot burst.
 
 ## Single-pass optimized default
 
 - Local and remote tasks use one shared normal path: one read-only inventory batch, one backed-up/idempotent mutation batch, one reload or restart, one end-to-end functional test, and one cleanup/window-restore close batch.
+- Call `selectTaskInteractionRoute` with declared capabilities: structured/terminal executes deterministic work, GUI executes interactive work, and desktop products use fast execution plus real GUI acceptance. Selection is synchronous and adds zero calls.
 - Before changing a command-line tool, API client, model/provider selector, or development environment, map every effective override layer in the same inventory pass: command/version, process environment, application config, selector/launcher config, auth-store metadata, and startup/user environment. Inspect secret presence or fingerprints only.
-- On Windows, rank `.exe`/`.com`/`.cmd`/`.bat` ahead of `.ps1`; generate collision-resistant PowerShell helper names and preflight them against commands/aliases. Wait for a primary launch and recheck the window list before dispatching a fallback. Classify an absent dependency as `environment_gap`, separately from `workflow_failure`.
+- On Windows, rank `.exe`/`.com`/`.cmd`/`.bat` ahead of `.ps1` and execute `buildWindowsCliInvocation(...).command`, locking the chosen path through execution. Generate collision-resistant helpers and preflight command/alias collisions. Wait and recheck before fallback. Classify an absent dependency as `environment_gap`, separately from `workflow_failure`.
 - Prefer structured output, exit codes, logs, or marker files for success. On an opaque canvas, bridge the real test marker once; do not repeat a successful operation merely to obtain accessibility text.
 - The normal visual budget is one initial and one terminal observation. Add a capture only for a layout/focus transition, absent evidence, or recovery.
 - Use soft decision budgets of 12 minutes for a known configuration repair and 20 minutes for a routine fresh user-space install. Crossing a budget pivots to the detailed diagnostic workflow rather than repeating the same strategy.
@@ -34,7 +35,7 @@
 
 ## Verification, tokens, and recovery
 
-- Success requires fresh observed evidence. Reuse the current action-refresh or supplied initial observation when it already contains the required semantic and visual evidence; otherwise refresh. Ambiguous evidence is `unknown`.
+- Success requires fresh evidence at the declared level: `presence`, `launch`, `functional`, or `user_flow`. Detection never satisfies a higher level. Reuse a current action-refresh or supplied observation that already meets the level; otherwise refresh. Ambiguous evidence is `unknown`.
 - Keep raw state inside the runtime. Emit a compact/token view, normally about 900 characters; expand only for ambiguity or recovery.
 - Match one compact verified playbook inside the first remote-observation cell and auto-promote semantic steps only after fresh success; a miss adds no model turn.
 - Start remote work with one complete screenshot. Group stable opaque-canvas text into one key-event burst and one terminal screenshot; bounded semantic polls, window lists, and customer return stay screenshot-free. The expensive unit is the state-capture call, so remove calls rather than merely removing pixel payloads.
@@ -42,5 +43,5 @@
 - Disconnect revokes remote authorization. Same-device reconnect requires fresh authorization and complete remapping. Device conflict or emergency stop latches stopped.
 - Select a semantic final filename before creating each deliverable; preserve its extension and verify the exact saved name. Generic defaults such as `新建文档`, `Untitled`, and `Document1` do not satisfy completion.
 - Clean only positively owned task artifacts; preserve pre-existing files and deliverables. Remote cleanup uses the exact ledger plan in one batch and records verified absence; it never scans the whole device.
-- Outside the explicit long opaque-canvas ASCII/IME preflight, normal-path enhancements add zero Computer Use captures, model roundtrips, and network requests. Milestone checkpoints queue locally and are flushed only at pause, recovery, or close.
+- Route selection, launcher locking, verification grading, unique markers, and clipboard receipt checks are local and add zero captures, model turns, or network requests. Adaptive chunking activates only after a declared limit or truncation receipt. Milestones flush only at pause, recovery, or close.
 - A remote final report includes exact host Token usage when available, otherwise a labelled compact-view estimate from already collected metrics, plus the task start, finish, total wall-clock duration, and active execution duration with excluded wait categories. Ordinary chat and local completion omit this block unless duration is requested. Remote close ends Agent input and foregrounds the host task surface before the wall-clock timer stops; the Codex adapter activates the current Codex window before its completion response.

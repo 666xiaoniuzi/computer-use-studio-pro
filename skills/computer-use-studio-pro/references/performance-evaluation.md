@@ -34,6 +34,10 @@ Use these levers:
 26. pay the runtime cold-start tax before the first decision with `warmUpRuntime` (one cheap `list_windows`); keep the session profile and route EWMA stats in memory only.
 27. for software/configuration work, inventory all effective override layers once, apply backed-up idempotent edits in one batch, reload/restart once, and run one end-to-end functional test with structured evidence.
 28. track active execution separately from wall clock with `pauseActive(category)`/`resumeActive()` so disconnect, takeover, and host-limit waits do not distort operator-efficiency comparisons.
+29. select structured, terminal, GUI, or hybrid execution locally from declared capabilities; use GUI only when interaction or desktop acceptance requires it.
+30. build and execute the selected Windows launcher as one absolute-path invocation instead of redispatching a bare name.
+31. route submitted command batches through the verified clipboard/terminal bridge so IME state does not add probe/recovery captures; keep key-event preflight as the fallback.
+32. use unique batch markers and clipboard write receipts; split only when a declared limit or truncation receipt requires it, preserving the one-paste normal path.
 
 Do not reduce latency by reusing stale indexes/coordinates, hiding confirmations, or queueing general unverified GUI macros. Terminal-only input bursts require current focus proof, stable single-field scope, a narrow keyboard vocabulary, an explicit confirmation-boundary declaration, and terminal semantic or visual verification. The remote-canvas variant additionally blocks device-ID payloads and defaults to key-event forwarding.
 
@@ -66,6 +70,10 @@ Track:
 - A remote-canvas ASCII burst performs exactly one terminal screenshot/state capture regardless of payload length, sends no raw `type_text`, and blocks the bound device ID from ordinary payloads.
 - A verified Unicode clipboard burst preserves/restores the prior clipboard and performs exactly one terminal state capture.
 - Adaptive `remoteText` selection performs zero tool/model calls and chooses verified clipboard for ASCII only when its declared Sky-call count is lower than key events (or Unicode/layout requires it); unknown cost keeps the existing key-event path.
+- A submitted command batch selects the verified clipboard bridge with zero selection calls even when clipboard cost is unspecified; key fallback requires an epoch-bound ASCII proof.
+- Interaction routing, launcher invocation construction, and verification-level grading are synchronous with zero captures, network requests, or model turns.
+- Consecutive terminal batches use different markers, stale output is rejected, the ordinary path keeps one paste, and chunks appear only after a declared limit or truncation receipt.
+- `presence` does not satisfy `launch`, `functional`, or `user_flow`; desktop acceptance exercises the requested UI once without repeating proven setup checks.
 - Remote evidence route selection performs zero inventory/network/tool calls, executes exactly one route, and has zero automatic fallbacks. A Windows terminal evidence run combines 1-20 read-only probes into one batch and reports its actual state-capture count.
 - Route latency learning stays in memory, adds zero I/O, and influences only later decisions; a failed route is not replayed through a slower path inside the same call.
 - Exact text/window expectations remain case-sensitive by default; supplied Caps Lock state changes only local key mapping and adds zero observations.
@@ -165,3 +173,13 @@ Using the existing host reference of roughly `3.1 s` per state capture, saving b
 The deterministic regressions now require: 1) the wait/keyboard probe generator to emit bounded in-script waits (`Stopwatch` loop, `elapsedMs`, `timed_out_ids` on expiry) and the keyboard-state probe; 2) the visible-client terminal bridge to paste/run/copy/parse one batch with zero state captures, restore the pre-run clipboard, and fail cleanly when markers never appear; 3) router batch requests of `N` probes to scale the state-capture baseline by `N` and never offer a state/screenshot route for `wait-*`/`keyboard` requests; 4) element-scoped postconditions to fail on the wrong tree line while the document-level check may pass; 5) a bound Codex window id to be preferred over the first deterministic match; 6) `warmUpRuntime` to add no state capture; and 7) the session profile to accumulate observations/actions/durations, verification failures, unknown outcomes, and recoveries in memory only.
 
 Structural estimate: one batch replaces up to `N` separate `get_window_state` reads (roughly `N × 3.1 s`), and a bounded in-batch wait replaces repeated GUI polling for the same duration, at the cost of one paste/copy cycle, plus the model's own roundtrip stays unchanged. A single-probe wait through the bridge may cost more than one capture, so the router excludes it unless the caller raises `maxEstimatedMs`; only multi-probe batches pass the default ceiling. These are structural references, not end-to-end percentages; repeat three comparable live runs (median, not best) against the ordinary observation path before claiming the 15% wall-clock advantage gate, and report verification failures and recoveries alongside wall time.
+
+## 0.9.4 hybrid acceptance and transport regression
+
+Deterministic regressions require: desktop installation selects terminal execution plus GUI acceptance, CLI configuration stays terminal-only, and document editing stays GUI; routing reports zero probes/captures/network/model turns; Windows execution locks the selected `.cmd` absolute path; command batches choose verified clipboard without a cost probe; lower evidence becomes `unknown`; consecutive batches use distinct markers and reject stale output; and the normal bridge keeps one paste while reported truncation triggers pre-Enter chunks with zero state captures/model turns.
+
+The normal path adds no Computer Use call, model roundtrip, network request, screenshot, or clipboard operation. New decisions are synchronous; adaptive chunking stays inactive until transport metadata reports a limit/truncation. Keep the default local and remote instruction-chain UTF-8 byte proxies at or below their 0.9.3 baselines before release.
+
+Release measurement: the local default chain decreased from `37,682` to `37,100` bytes (`-1.54%`), and the remote chain from `51,961` to `50,577` bytes (`-2.66%`). These are reproducible instruction-size proxies; host counters remain the source for billed Tokens.
+
+On the release host, five runs of 100,000 combined interaction-route and launcher-invocation decisions produced a `194.325 ms` median, or about `1.943 µs` per pair. This is local routing overhead, not an end-to-end remote timing.

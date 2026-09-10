@@ -25,8 +25,10 @@ def version_from_manifest(skill: Path) -> str:
     return match.group(1)
 
 
-def include_file(path: Path, root: Path) -> bool:
+def include_file(path: Path, root: Path, excluded_paths: frozenset[Path] = frozenset()) -> bool:
     rel = path.relative_to(root)
+    if path.resolve() in excluded_paths:
+        return False
     if any(part in EXCLUDED_PARTS for part in rel.parts):
         return False
     if path.suffix.lower() in EXCLUDED_SUFFIXES:
@@ -34,14 +36,14 @@ def include_file(path: Path, root: Path) -> bool:
     return path.is_file() and not path.is_symlink()
 
 
-def deterministic_zip(output: Path, root: Path, archive_root: str) -> None:
+def deterministic_zip(output: Path, root: Path, archive_root: str, excluded_paths: frozenset[Path] = frozenset()) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(prefix=output.name + ".", suffix=".tmp", dir=output.parent)
     os.close(fd)
     temp = Path(temp_name)
     try:
         with zipfile.ZipFile(temp, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
-            for path in sorted((p for p in root.rglob("*") if include_file(p, root)), key=lambda p: p.relative_to(root).as_posix()):
+            for path in sorted((p for p in root.rglob("*") if include_file(p, root, excluded_paths)), key=lambda p: p.relative_to(root).as_posix()):
                 rel = PurePosixPath(archive_root) / PurePosixPath(path.relative_to(root).as_posix())
                 info = zipfile.ZipInfo(rel.as_posix(), FIXED_TIME)
                 info.compress_type = zipfile.ZIP_DEFLATED
@@ -84,8 +86,9 @@ def build(repo: Path, source_zip: Path, install_zip: Path, checksums: Path) -> N
     if not (repo / "README.md").is_file() or not (skill / "SKILL.md").is_file():
         raise RuntimeError(f"Unexpected repository layout: {repo}")
     version = version_from_manifest(skill)
-    deterministic_zip(source_zip, repo, "computer-use-studio-pro-bundle")
-    deterministic_zip(install_zip, skill, "computer-use-studio-pro")
+    output_paths = frozenset(path.resolve() for path in (source_zip, install_zip, checksums))
+    deterministic_zip(source_zip, repo, "computer-use-studio-pro-bundle", output_paths)
+    deterministic_zip(install_zip, skill, "computer-use-studio-pro", output_paths)
     lines = [
         f"{sha256(source_zip)}  {source_zip.name}",
         f"{sha256(install_zip)}  {install_zip.name}",
@@ -107,7 +110,9 @@ def self_test() -> None:
         (root / ".git" / "config").write_text("excluded\n", encoding="utf-8")
         (skill / "SKILL.md").write_text("---\nname: computer-use-studio-pro\ndescription: demo\n---\n", encoding="utf-8")
         (skill / "manifest.yaml").write_text("version: 9.9.9\n", encoding="utf-8")
-        out = Path(temp_dir) / "out"
+        # Keep outputs inside the repository fixture to prove that repeated
+        # builds exclude their own prior ZIP/checksum artifacts.
+        out = root / "test-tmp" / "out"
         source = out / "source.zip"
         install = out / "install.zip"
         sums = out / "SHA256SUMS.txt"

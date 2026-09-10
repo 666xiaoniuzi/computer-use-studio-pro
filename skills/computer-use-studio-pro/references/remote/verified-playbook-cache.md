@@ -26,7 +26,7 @@ title | up to 3 prechecks | up to 6 semantic steps
 | successes/failures | candidate/trusted/retired
 ```
 
-Raw typed values, secrets, clipboard contents, device identifiers, screenshots, coordinates, and expiring UI references are removed. Parameters must remain placeholders such as `<MODE>` or `<PACKAGE>`.
+Store semantic execution/acceptance routes and the required verification level with each successful recipe. Raw typed values, secrets, clipboard contents, device identifiers, screenshots, coordinates, and expiring UI references are removed. Parameters remain placeholders such as `<MODE>` or `<PACKAGE>`.
 
 ## Lifecycle
 

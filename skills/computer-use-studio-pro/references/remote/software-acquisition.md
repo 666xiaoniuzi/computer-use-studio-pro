@@ -14,9 +14,9 @@ remote OS/architecture | already installed/version | requested capability | actu
 
 Resolve product mismatches before spending download time. In particular, a coding-client switcher such as CC Switch configures the coding clients it supports; it does not change the model inside the official ChatGPT desktop application.
 
-Return only secret presence or fingerprints. When configuration is part of the task, collect every effective override layer in this same pass, then apply one backed-up idempotent batch, reload/restart once, and run one real end-to-end check.
+Return only secret presence or fingerprints. Call `selectTaskInteractionRoute` from declared capabilities: semantic execution for setup, GUI for interactive products, and hybrid for desktop software. Collect overrides in the same pass, apply one backed-up idempotent batch, reload/restart once, and run the required acceptance level.
 
-On Windows, enumerate all launcher candidates and choose `.exe`/`.com`/`.cmd`/`.bat` before `.ps1`; this keeps npm and similar tools independent of the current PowerShell script policy. Use collision-resistant `__Cusp_*` names for batch helpers and preflight them with `Get-Command`. Mark an absent command/package as `environment_gap`, then repair it; use `workflow_failure` only when the selected execution path actually fails.
+On Windows, enumerate launchers and execute `buildWindowsCliInvocation(...).command`; this locks the selected native/CMD absolute path instead of re-resolving a bare name to `.ps1`. Use collision-resistant helpers with `Get-Command` preflight. Keep absent commands/packages as `environment_gap`, separate from an executed-path failure.
 
 ## Source order
 
@@ -49,4 +49,4 @@ installed-app check -> Microsoft Store publisher result -> domestic official pag
 
 For ChatGPT on Windows, try the Microsoft Store publisher listing before browser downloads. For region-specific tools, use their domestic official site before GitHub unless that official site points to GitHub Releases.
 
-Success means the requested application launches and passes the task's minimal functional test; download completion alone is intermediate evidence.
+Success uses the task's declared level: download/package/path is `presence`, opening is `launch`, a real operation is `functional`, and a normal desktop workflow is `user_flow`. Desktop requests receive one GUI acceptance check after the faster setup route.

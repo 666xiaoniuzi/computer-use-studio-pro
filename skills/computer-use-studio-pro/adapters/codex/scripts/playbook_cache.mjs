@@ -123,8 +123,12 @@ function normalizeRecipe(recipe = {}) {
     .map(normalizeStep)
     .filter(Boolean)
     .slice(0, 6);
+  const interactionRoute = String(recipe.interaction_route ?? recipe.interactionRoute ?? "");
+  const verificationLevel = String(recipe.verification_level ?? recipe.verificationLevel ?? "");
   return {
     title: cleanText(recipe.title, 100),
+    ...(new Set(["structured", "terminal", "gui", "hybrid"]).has(interactionRoute) ? { interaction_route: interactionRoute } : {}),
+    ...(new Set(["presence", "launch", "functional", "user_flow"]).has(verificationLevel) ? { verification_level: verificationLevel } : {}),
     prechecks: stringList(recipe.prechecks, 3, 140),
     steps,
     success_checks: stringList(recipe.success_checks ?? recipe.successChecks, 3, 140),
@@ -390,6 +394,8 @@ export async function selfTest() {
     };
     const recipe = {
       title: "Plugin download repair token=secret-value Bearer abcdefgh12345678",
+      interaction_route: "hybrid",
+      verification_level: "user_flow",
       prechecks: ["Read exact error", "Check marketplace visibility"],
       steps: [
         { action: "inspect", target: "plugin status", expect: "error classified", element_index: 42 },
@@ -407,6 +413,10 @@ export async function selfTest() {
       throw new Error("verified playbook match failed");
     }
     const raw = await readFile(filePath, "utf8");
+    const storedRecipe = JSON.parse(raw).recipes?.[0]?.recipe;
+    if (storedRecipe?.interaction_route !== "hybrid" || storedRecipe?.verification_level !== "user_flow") {
+      throw new Error("playbook cache omitted interaction route or verification level");
+    }
     if (raw.includes("secret-value") || raw.includes("123456789") || raw.includes("element_index")
         || raw.includes("abcdefgh12345678") || raw.includes("eyJhbGciOiJIUzI1NiJ9")
         || raw.includes("AKIAIOSFODNN7EXAMPLE")) {

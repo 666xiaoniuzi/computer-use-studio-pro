@@ -183,12 +183,97 @@ export function selectWindowsCliLauncher(candidates, options = {}) {
   });
 }
 
+function powershellLiteral(value) {
+  return `'${String(value ?? "").replaceAll("'", "''")}'`;
+}
+
+/**
+ * Turn the selected Windows launcher into the exact PowerShell invocation that
+ * must be executed.  This closes the gap where discovery selected npm.cmd or
+ * claude.cmd but a later naked command name resolved to the PS1 shim again.
+ * Selection and command construction are synchronous and issue no host call.
+ */
+export function buildWindowsCliInvocation(candidates, args = [], options = {}) {
+  if (!Array.isArray(args)) throw new Error("Windows CLI invocation args must be an array");
+  const selected = selectWindowsCliLauncher(candidates, options);
+  const command = `& ${powershellLiteral(selected.path)}${args.length ? ` ${args.map(powershellLiteral).join(" ")}` : ""}`;
+  return Object.freeze({
+    ...selected,
+    args: Object.freeze(args.map((item) => String(item ?? ""))),
+    command,
+    shell: "powershell",
+    resolution_locked: true,
+    selection_calls: 0,
+  });
+}
+
+const GUI_EXECUTION_OPERATIONS = new Set([
+  "browser-login", "document-edit", "peripheral-setup", "visual-workflow", "user-flow", "desktop-settings",
+]);
+const DESKTOP_TARGETS = new Set(["desktop-app", "browser", "office", "pdf", "peripheral", "model-selector"]);
+const INTERACTION_INTERFACES = new Set(["auto", "structured", "terminal", "gui"]);
+
+/**
+ * Choose execution and acceptance surfaces from already-known capabilities.
+ * Deterministic system work stays on a structured/terminal route; a desktop
+ * product receives a real GUI acceptance check, producing a hybrid plan when
+ * appropriate.  The decision is local: zero probes, captures, network calls,
+ * or model roundtrips.
+ */
+export function selectTaskInteractionRoute(input = {}) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Task interaction route requires an object");
+  const operation = String(input.operation ?? "diagnose").trim().toLowerCase();
+  const targetKind = String(input.targetKind ?? input.target_kind ?? "system").trim().toLowerCase();
+  const preferred = String(input.preferredInterface ?? input.preferred_interface ?? "auto").trim().toLowerCase();
+  if (!INTERACTION_INTERFACES.has(preferred)) throw new Error("Unsupported preferred interface");
+  const available = {
+    structured: input.structuredAvailable === true || input.structured_available === true,
+    terminal: input.terminalAvailable === true || input.terminal_available === true,
+    gui: input.guiAvailable === true || input.gui_available === true,
+  };
+  const needsGuiExecution = input.requiresInteractiveUi === true || input.requires_interactive_ui === true
+    || GUI_EXECUTION_OPERATIONS.has(operation) || preferred === "gui";
+  const needsGuiAcceptance = input.requiresVisualAcceptance === true || input.requires_visual_acceptance === true
+    || input.requiresUserWorkflow === true || input.requires_user_workflow === true
+    || DESKTOP_TARGETS.has(targetKind);
+  const fastestSemantic = available.structured ? "structured" : available.terminal ? "terminal" : available.gui ? "gui" : null;
+  let execution = preferred !== "auto" && available[preferred] ? preferred : fastestSemantic;
+  if (needsGuiExecution) execution = available.gui ? "gui" : null;
+  const acceptance = needsGuiAcceptance ? (available.gui ? "gui" : null) : execution;
+  const route = execution && acceptance ? (execution === acceptance ? execution : "hybrid") : null;
+  return Object.freeze({
+    ok: route != null,
+    route,
+    execution,
+    acceptance,
+    operation,
+    target_kind: targetKind,
+    requires_gui_acceptance: needsGuiAcceptance,
+    reason: route === "hybrid" ? "fast-semantic-execution-plus-real-user-flow-acceptance"
+      : route === "gui" ? "interactive-or-visual-workflow"
+        : route ? "fastest-declared-semantic-route" : "missing-interface",
+    metrics: Object.freeze({ capability_probes: 0, state_captures: 0, network_requests: 0, model_roundtrips: 0 }),
+  });
+}
+
 const TASK_OUTCOME_STATUSES = new Set(["verified", "environment_gap", "workflow_failure", "unknown"]);
+const TASK_VERIFICATION_LEVELS = Object.freeze({ presence: 0, launch: 1, functional: 2, user_flow: 3 });
+
+function taskVerificationLevel(value) {
+  const normalized = String(value ?? "").trim().toLowerCase().replaceAll("-", "_");
+  if (!normalized) return null;
+  if (!(normalized in TASK_VERIFICATION_LEVELS)) throw new Error(`Unsupported task verification level: ${value}`);
+  return normalized;
+}
 
 /** Keep a missing dependency separate from a failure in the automation path. */
 export function normalizeTaskOutcome(input = {}) {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Task outcome must be an object");
   const explicit = String(input.status ?? input.outcome_class ?? "").trim().toLowerCase().replaceAll("-", "_");
+  const requiredLevel = taskVerificationLevel(input.requiredLevel ?? input.required_level);
+  let achievedLevel = taskVerificationLevel(input.achievedLevel ?? input.achieved_level);
+  if (requiredLevel && !achievedLevel && (input.verified === true || input.ok === true || explicit === "verified")) achievedLevel = requiredLevel;
+  const requirementMet = !requiredLevel || (achievedLevel && TASK_VERIFICATION_LEVELS[achievedLevel] >= TASK_VERIFICATION_LEVELS[requiredLevel]);
   let status;
   if (TASK_OUTCOME_STATUSES.has(explicit)) status = explicit;
   else if (input.verified === true) status = "verified";
@@ -198,12 +283,19 @@ export function normalizeTaskOutcome(input = {}) {
   } else if (input.ok === true) status = "verified";
   else if (input.ok === false || input.error != null) status = "workflow_failure";
   else status = "unknown";
+  if (status === "verified" && !requirementMet) status = "unknown";
   return Object.freeze({
     status,
     verified: status === "verified",
     needs_environment_repair: status === "environment_gap",
     workflow_failed: status === "workflow_failure",
-    reason: input.reason ?? input.error ?? null,
+    reason: input.reason ?? input.error ?? (!requirementMet ? `verification level ${achievedLevel ?? "none"} is below ${requiredLevel}` : null),
+    check_id: input.checkId ?? input.check_id ?? null,
+    target: input.target ?? null,
+    phase: input.phase ?? null,
+    required_level: requiredLevel,
+    achieved_level: achievedLevel,
+    requirement_met: Boolean(requirementMet),
     source: input,
   });
 }
@@ -218,6 +310,8 @@ export function summarizeTaskOutcomes(items = []) {
     all_verified: outcomes.length > 0 && counts.verified === outcomes.length,
     workflow_failed: counts.workflow_failure > 0,
     environment_repairs_needed: counts.environment_gap,
+    unmet_requirements: outcomes.filter((item) => item.requirement_met === false).length,
+    check_ids: Object.freeze(outcomes.map((item, index) => item.check_id ?? `check-${index + 1}`)),
     outcomes: Object.freeze(outcomes),
   });
 }
@@ -926,7 +1020,7 @@ function remoteCanvasTextActions(text, options = {}) {
   return actions;
 }
 
-/** Decide locally whether a long opaque-canvas ASCII payload needs an IME probe. */
+/** Decide locally whether an opaque-canvas ASCII payload needs an IME probe. */
 export function shouldPreflightRemoteAsciiInput(text, options = {}) {
   const value = String(text ?? "");
   const threshold = Number(options.preflightThreshold ?? DEFAULT_REMOTE_ASCII_PREFLIGHT_THRESHOLD);
@@ -934,7 +1028,7 @@ export function shouldPreflightRemoteAsciiInput(text, options = {}) {
     throw new Error(`preflightThreshold must be an integer from 32 to ${MAX_REMOTE_CANVAS_TEXT_CHARS}`);
   }
   return options.asciiInputVerified !== true
-    && value.length >= threshold
+    && (value.length >= threshold || options.commandBatch === true)
     && !/[^\x20-\x7e]/u.test(value);
 }
 
@@ -1058,6 +1152,17 @@ export function selectRemoteTextTransport(text, options = {}) {
   if (preferred === "key-events") {
     if (!ascii || !keyLayoutReady) throw new Error("Preferred key-event transport requires printable ASCII and a verified US layout");
     return Object.freeze({ transport: "key-events", reason: "explicit", estimated_sky_calls: keyEventTextSkyCalls(text, options) });
+  }
+  // Submitted command batches are both faster and independent of the active
+  // remote IME when they use the verified clipboard/terminal bridge.  This is
+  // a local choice and adds no observation or model turn.
+  if (options.commandBatch === true && clipboardReady) {
+    return Object.freeze({
+      transport: "verified-clipboard",
+      reason: "command-batch-ime-independent",
+      estimated_sky_calls: clipboardTextSkyCalls(options),
+      alternative_sky_calls: ascii && keyLayoutReady ? keyEventTextSkyCalls(text, options) : Infinity,
+    });
   }
   if (clipboardReady) {
     const clipboardCalls = clipboardTextSkyCalls(options);
@@ -1292,6 +1397,8 @@ export function createPersistentWindowSession(sky, options = {}) {
   let playbookRecording = null;
   const playbookTrace = {
     title: compactText(options.playbookTitle ?? taskScope, 100),
+    interaction_route: options.playbookInteractionRoute ?? null,
+    verification_level: options.playbookVerificationLevel ?? null,
     prechecks: [...(options.playbookPrechecks ?? [])].slice(0, 3),
     steps: [],
     success_checks: [],
@@ -2021,12 +2128,17 @@ export function createPersistentWindowSession(sky, options = {}) {
     if (mode !== "remote-fast-fix") throw new Error("remoteCanvasText applies only to remote-fast-fix sessions");
     if (!initialized) await initialObserve();
     assertInputAllowed(state);
-    const needsPreflight = shouldPreflightRemoteAsciiInput(text, canvasOptions)
+    const suppliedAsciiProof = canvasOptions.asciiVerification?.verified === true
+      && Number(canvasOptions.asciiVerification?.layoutEpoch) === layoutEpoch;
+    const needsPreflight = shouldPreflightRemoteAsciiInput(text, {
+      ...canvasOptions,
+      asciiInputVerified: asciiInputVerifiedEpoch === layoutEpoch || suppliedAsciiProof,
+    })
       && asciiInputVerifiedEpoch !== layoutEpoch;
     let asciiPreflight = null;
     if (needsPreflight) {
       if (!canvasOptions.imePreflight || typeof canvasOptions.imePreflight !== "object") {
-        const error = new Error("Long remote ASCII input requires imePreflight options or asciiInputVerified: true");
+        const error = new Error("Remote ASCII command/long input requires imePreflight options or an epoch-bound asciiVerification proof");
         error.code = "REMOTE_ASCII_PREFLIGHT_REQUIRED";
         throw error;
       }
@@ -2046,7 +2158,7 @@ export function createPersistentWindowSession(sky, options = {}) {
         error.preflight = asciiPreflight;
         throw error;
       }
-    } else if (canvasOptions.asciiInputVerified === true) {
+    } else if (suppliedAsciiProof) {
       asciiInputVerifiedEpoch = layoutEpoch;
     }
     // The successful preflight leaves the same terminal focused, so do not
@@ -3599,22 +3711,50 @@ export async function selfTest() {
   const unknownClipboardCostSelection = selectRemoteTextTransport("OpenAI", {
     transportVerified: true, clipboard: { async write() {} },
   });
+  const commandClipboardSelection = selectRemoteTextTransport("git --version", {
+    commandBatch: true,
+    transportVerified: true,
+    clipboard: { async write() {} },
+  });
   const npmLauncher = selectWindowsCliLauncher([
     "C:\\Program Files\\nodejs\\npm.ps1",
     "C:\\Program Files\\nodejs\\npm.cmd",
   ]);
+  const claudeInvocation = buildWindowsCliInvocation([
+    "C:\\Users\\demo\\AppData\\Roaming\\npm\\claude.ps1",
+    "C:\\Users\\demo\\AppData\\Roaming\\npm\\claude.cmd",
+  ], ["--version"]);
+  const desktopInstallRoute = selectTaskInteractionRoute({
+    operation: "install", targetKind: "desktop-app", terminalAvailable: true, guiAvailable: true,
+  });
+  const cliRoute = selectTaskInteractionRoute({
+    operation: "configure", targetKind: "cli-tool", terminalAvailable: true, guiAvailable: true,
+  });
+  const guiRoute = selectTaskInteractionRoute({
+    operation: "document-edit", targetKind: "office", terminalAvailable: true, guiAvailable: true,
+  });
   const outcomeSummary = summarizeTaskOutcomes([
     { verified: true },
     { ok: true, dependency_present: false, reason: "claude command absent" },
     { ok: false, error: "automation assertion failed" },
   ]);
+  const verificationSummary = summarizeTaskOutcomes([
+    { checkId: "browser-user-flow", verified: true, requiredLevel: "user_flow", achievedLevel: "presence" },
+  ]);
   const exactCaseState = { window, accessibility: { document_text: "OpenAI" }, screenshots: [] };
   if (capsKeys.join(",") !== "a,Shift_L+a"
       || clipboardSelection.transport !== "verified-clipboard" || clipboardSelection.reason !== "fewer-sky-calls"
       || keySelection.transport !== "key-events" || unknownClipboardCostSelection.transport !== "key-events"
+      || commandClipboardSelection.transport !== "verified-clipboard" || commandClipboardSelection.reason !== "command-batch-ime-independent"
       || npmLauncher.path !== "C:\\Program Files\\nodejs\\npm.cmd" || npmLauncher.reason !== "execution-policy-compatible"
+      || !claudeInvocation.command.startsWith("& 'C:\\Users\\demo\\AppData\\Roaming\\npm\\claude.cmd'")
+      || !claudeInvocation.resolution_locked || claudeInvocation.selection_calls !== 0
+      || desktopInstallRoute.route !== "hybrid" || desktopInstallRoute.execution !== "terminal" || desktopInstallRoute.acceptance !== "gui"
+      || cliRoute.route !== "terminal" || guiRoute.route !== "gui"
+      || desktopInstallRoute.metrics.state_captures !== 0 || desktopInstallRoute.metrics.model_roundtrips !== 0
       || outcomeSummary.counts.verified !== 1 || outcomeSummary.counts.environment_gap !== 1
       || outcomeSummary.counts.workflow_failure !== 1 || !outcomeSummary.workflow_failed
+      || verificationSummary.counts.unknown !== 1 || verificationSummary.unmet_requirements !== 1
       || !expectationResult(exactCaseState, { documentEquals: "OpenAI" }).ok
       || expectationResult(exactCaseState, { documentEquals: "openai" }).ok
       || !expectationResult(exactCaseState, { documentEquals: "openai", caseSensitive: false }).ok) {
@@ -3887,6 +4027,7 @@ export async function selfTest() {
       || preflight.metrics.ime_toggles !== 1 || preflightReads !== 2
       || preflightKeys.filter((key) => key === "Shift_L").length !== 1
       || !shouldPreflightRemoteAsciiInput("x".repeat(160))
+      || !shouldPreflightRemoteAsciiInput("git --version", { commandBatch: true })
       || shouldPreflightRemoteAsciiInput("x".repeat(160), { asciiInputVerified: true })) {
     throw new Error("remote ASCII IME preflight self-test failed");
   }

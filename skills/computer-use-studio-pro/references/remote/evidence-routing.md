@@ -47,7 +47,7 @@ Keep allowlists, schema validation, task/target binding, rollback, confirmation,
 
 ## One-batch Windows terminal evidence
 
-`buildWindowsRemoteEvidenceBatch(...)` supports 1-20 read-only probes: `file`, `process`, `service`, `port`, `inner-window`, `registry`, `app-version`, `system`, `dns`, the bounded wait probes `wait-file` / `wait-process` / `wait-service` / `wait-port` (`timeoutMs` up to 300000, `intervalMs` 50-10000, optional `present: false` to invert), and `keyboard` (CapsLock/NumLock/layout of the machine that runs the batch). It emits one UTF-16LE encoded PowerShell command with marker-delimited compact JSON. Every generated helper uses an isolated `__Cusp_<hash>_*` namespace and a case-insensitive `Get-Command` collision preflight before definition; custom batches can use `createPowerShellHelperNamespace(...)` and `validatePowerShellHelperNames(...)` for the same rule. `runWindowsRemoteEvidenceBatch(...)` executes one verified bridge call and parses only the marked payload; an expired wait probe reports its id in `timed_out_ids` so the caller can decide "not yet" without a GUI capture or model roundtrip.
+`buildWindowsRemoteEvidenceBatch(...)` supports 1-20 read-only file/process/service/port/window/registry/version/system/DNS, bounded `wait-*`, and keyboard probes. It emits one encoded PowerShell command with compact JSON between unique per-batch markers, so stale clipboard output from an earlier batch never verifies. Helpers use isolated `__Cusp_<hash>_*` names and case-insensitive collision preflight. `runWindowsRemoteEvidenceBatch(...)` parses only the current markers; expired waits return `timed_out_ids` without GUI capture or model turn.
 
 ```js
 const result = await runWindowsRemoteEvidenceBatch(verifiedTerminalBridge, [
@@ -60,7 +60,7 @@ const result = await runWindowsRemoteEvidenceBatch(verifiedTerminalBridge, [
 
 ## Visible-client terminal bridge
 
-`createVisibleClientTerminalBridge(sky, options)` is the real execution channel for a visible client: it writes the encoded command through a verified clipboard bridge, pastes it with `Control_L+v` into the focused terminal, presses `Return`, then repeatedly selects/copies the buffer (`Control_L+a` / `Control_L+c`) until the output markers appear (bounded copy attempts), parses the JSON, and restores the pre-run clipboard. The whole batch is one bridge call with zero state captures; the caller supplies the focused terminal window (optionally a `focusPoint` from the current screenshot) and must confirm the select/copy/paste keys work in that terminal (Windows Terminal supports Ctrl+A/Ctrl+C/Ctrl+V).
+`createVisibleClientTerminalBridge(sky, options)` writes the encoded command through a verified clipboard, pastes/runs it, copies until the current unique markers appear, parses JSON, and restores the prior clipboard. A declared `maxPasteChars`/`clipboard.maxReliableChars` splits only oversized payloads; a write receipt reporting truncation triggers adaptive chunks before Enter. Ordinary payloads retain exactly one write and paste. The bridge remains one call with zero state captures/model turns; supply a focused terminal and confirmed select/copy/paste keys.
 
 ```js
 const bridge = createVisibleClientTerminalBridge(sky, {

@@ -22,6 +22,7 @@
 ## Verification
 
 - Define the postcondition before the action.
+- Declare its evidence level: `presence`, `launch`, `functional`, or `user_flow`. A detected package, path, or process satisfies only the level it actually proves.
 - Accept completion only from observed evidence: tool result, element property, URL/title, selected value, application status, request history, sent-item record, or file metadata.
 - Use two independent signals for irreversible, external, duplicate-prone, or high-impact outcomes when available.
 - Treat a missing or ambiguous signal as `unknown`, not success.

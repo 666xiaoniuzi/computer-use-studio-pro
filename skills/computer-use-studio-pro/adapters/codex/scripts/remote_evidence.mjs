@@ -3,7 +3,7 @@
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Buffer } from "node:buffer";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
 import { enforceRuntimeGate, assertLicensed } from "./license_check.mjs";
 
@@ -419,6 +419,10 @@ function normalizeProbes(probes) {
 /** Build one encoded PowerShell command that emits a marker-delimited JSON array. */
 export function buildWindowsRemoteEvidenceBatch(probes, options = {}) {
   const normalized = normalizeProbes(probes);
+  const markerNonce = String(options.markerNonce ?? randomBytes(8).toString("hex")).trim().toLowerCase();
+  if (!/^[a-z0-9]{8,40}$/u.test(markerNonce)) throw new Error("Remote evidence marker nonce must contain 8-40 lowercase letters or digits");
+  const startMarker = `__CUSPRO_EVIDENCE_BEGIN_${markerNonce}__`;
+  const endMarker = `__CUSPRO_EVIDENCE_END_${markerNonce}__`;
   const namespace = createPowerShellHelperNamespace(["AppendResult"], {
     seed: options.helperSeed ?? JSON.stringify(normalized),
   });
@@ -432,7 +436,7 @@ export function buildWindowsRemoteEvidenceBatch(probes, options = {}) {
   };
   const statements = normalized.map((probe) => probeStatement(probe, context)).join(";");
   const helper = `function ${context.append}{param($Id,$Kind,$Ok,$Value,$ErrorText);$script:${resultVar}+=[pscustomobject]@{id=$Id;kind=$Kind;ok=[bool]$Ok;value=$Value;error=$ErrorText}}`;
-  const script = `&{$ProgressPreference='SilentlyContinue';$ErrorActionPreference='Stop';${namespace.preflight};$script:${resultVar}=@();${helper};${statements};Write-Output '${START_MARKER}';Write-Output ($script:${resultVar}|ConvertTo-Json -Compress -Depth 6);Write-Output '${END_MARKER}';Remove-Item -LiteralPath Function:\\${context.append} -ErrorAction SilentlyContinue}`;
+  const script = `&{$ProgressPreference='SilentlyContinue';$ErrorActionPreference='Stop';${namespace.preflight};$script:${resultVar}=@();${helper};${statements};Write-Output '${startMarker}';Write-Output ($script:${resultVar}|ConvertTo-Json -Compress -Depth 6);Write-Output '${endMarker}';Remove-Item -LiteralPath Function:\\${context.append} -ErrorAction SilentlyContinue}`;
   const encodedCommand = Buffer.from(script, "utf16le").toString("base64");
   const executable = String(options.executable ?? "powershell.exe");
   return Object.freeze({
@@ -440,19 +444,22 @@ export function buildWindowsRemoteEvidenceBatch(probes, options = {}) {
     script,
     encodedCommand,
     command: `${executable} -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encodedCommand}`,
-    startMarker: START_MARKER,
-    endMarker: END_MARKER,
+    startMarker,
+    endMarker,
+    markerNonce,
     helperNamespace: namespace,
   });
 }
 
 /** Parse only the marker-delimited JSON, ignoring prompts and echoed commands. */
-export function parseWindowsRemoteEvidenceOutput(output) {
+export function parseWindowsRemoteEvidenceOutput(output, markers = {}) {
   const text = String(output ?? "");
-  const start = text.lastIndexOf(START_MARKER);
-  const end = text.indexOf(END_MARKER, start + START_MARKER.length);
+  const startMarker = String(markers.startMarker ?? START_MARKER);
+  const endMarker = String(markers.endMarker ?? END_MARKER);
+  const start = text.lastIndexOf(startMarker);
+  const end = text.indexOf(endMarker, start + startMarker.length);
   if (start < 0 || end < 0) throw new Error("Remote evidence output markers are missing");
-  const json = text.slice(start + START_MARKER.length, end).trim();
+  const json = text.slice(start + startMarker.length, end).trim();
   const value = JSON.parse(json);
   return Array.isArray(value) ? value : [value];
 }
@@ -470,7 +477,7 @@ export async function runWindowsRemoteEvidenceBatch(bridge, probes, options = {}
     : await bridge.execute(plan);
   const results = Array.isArray(raw?.results)
     ? raw.results
-    : parseWindowsRemoteEvidenceOutput(raw?.stdout ?? raw?.text ?? raw);
+    : parseWindowsRemoteEvidenceOutput(raw?.stdout ?? raw?.text ?? raw, plan);
   const expectedIds = new Set(plan.probes.map((probe) => probe.id));
   const returnedIds = new Set(results.map((result) => String(result?.id ?? "")));
   const complete = expectedIds.size === returnedIds.size && [...expectedIds].every((id) => returnedIds.has(id));
@@ -527,6 +534,22 @@ export function createVisibleClientTerminalBridge(sky, options = {}) {
   const waitAttempts = Math.max(1, Number(options.waitAttempts ?? 4));
   const waitIntervalMs = Math.max(0, Number(options.waitIntervalMs ?? 1500));
 
+  function positiveInteger(value) {
+    const number = Number(value);
+    return Number.isInteger(number) && number > 0 ? number : null;
+  }
+
+  function clipboardReceipt(result, expectedLength) {
+    if (result?.ok === false || result?.accepted === false) throw new Error("Clipboard bridge rejected the command payload");
+    const reportedLength = positiveInteger(result?.writtenChars ?? result?.written_chars ?? result?.acceptedChars ?? result?.accepted_chars);
+    const capacity = positiveInteger(result?.maxReliableChars ?? result?.max_reliable_chars ?? result?.capacity);
+    return {
+      truncated: result?.truncated === true || (reportedLength != null && reportedLength < expectedLength),
+      reportedLength,
+      capacity,
+    };
+  }
+
   async function execute(plan) {
     if (!plan || typeof plan.command !== "string") {
       throw new Error("Visible-client terminal bridge requires a prepared command plan");
@@ -536,8 +559,26 @@ export function createVisibleClientTerminalBridge(sky, options = {}) {
     let clipboardCalls = 0;
     let priorClipboard = null;
     let rawOutput = "";
+    let pasteChunks = 0;
+    let staleClipboardReads = 0;
     const probeIds = new Set((plan.probes ?? []).map((probe) => String(probe.id ?? "")));
     const press = async (key) => { await sky.press_key({ window, key }); skyCalls += 1; };
+    const write = async (value) => {
+      const result = await clipboard.write(value, { window });
+      clipboardCalls += 1;
+      skyCalls += Number(result?.sky_calls ?? 0);
+      return { result, receipt: clipboardReceipt(result, value.length) };
+    };
+    const writeAndPasteChunks = async (value, limit) => {
+      const chunks = [];
+      for (let offset = 0; offset < value.length; offset += limit) chunks.push(value.slice(offset, offset + limit));
+      for (const chunk of chunks) {
+        const { receipt } = await write(chunk);
+        if (receipt.truncated) throw new Error("Clipboard bridge truncated an adaptive command chunk");
+        await press(pasteKey);
+        pasteChunks += 1;
+      }
+    };
     try {
       if (typeof clipboard.read === "function") priorClipboard = await clipboard.read();
       if (focusPoint) {
@@ -546,10 +587,20 @@ export function createVisibleClientTerminalBridge(sky, options = {}) {
         skyCalls += 1;
       }
       if (options.beforePaste) await options.beforePaste();
-      const writeResult = await clipboard.write(plan.command, { window });
-      clipboardCalls += 1;
-      skyCalls += Number(writeResult?.sky_calls ?? 0);
-      await press(pasteKey);
+      const declaredLimit = positiveInteger(options.maxPasteChars ?? clipboard.maxReliableChars ?? clipboard.max_reliable_chars);
+      if (declaredLimit && plan.command.length > declaredLimit) {
+        await writeAndPasteChunks(plan.command, declaredLimit);
+      } else {
+        const { receipt } = await write(plan.command);
+        if (receipt.truncated) {
+          const adaptiveLimit = receipt.capacity ?? receipt.reportedLength;
+          if (!adaptiveLimit) throw new Error("Clipboard bridge reported truncation without a usable payload limit");
+          await writeAndPasteChunks(plan.command, adaptiveLimit);
+        } else {
+          await press(pasteKey);
+          pasteChunks = 1;
+        }
+      }
       await press(enterKey);
       let results = null;
       for (let attempt = 0; attempt < waitAttempts; attempt += 1) {
@@ -557,8 +608,9 @@ export function createVisibleClientTerminalBridge(sky, options = {}) {
         await press(copyKey);
         rawOutput = String(await clipboard.read() ?? "");
         clipboardCalls += 1;
+        if (rawOutput === String(priorClipboard ?? "")) staleClipboardReads += 1;
         try {
-          const parsed = parseWindowsRemoteEvidenceOutput(rawOutput);
+          const parsed = parseWindowsRemoteEvidenceOutput(rawOutput, plan);
           if (Array.isArray(parsed) && parsed.length > 0) {
             results = parsed;
             const returnedIds = new Set(parsed.map((item) => String(item?.id ?? "")));
@@ -589,6 +641,8 @@ export function createVisibleClientTerminalBridge(sky, options = {}) {
           screenshots: 0,
           terminal_batches: 1,
           clipboard_calls: clipboardCalls,
+          paste_chunks: pasteChunks,
+          stale_clipboard_reads: staleClipboardReads,
           model_roundtrips: 0,
           automatic_fallbacks: 0,
           duration_ms: Date.now() - started,
@@ -634,22 +688,28 @@ export async function selfTest() {
     { id: "file-1", kind: "file", path: "C:\\Program Files\\Demo\\demo.exe" },
     { id: "proc-1", kind: "process", name: "demo" },
   ];
-  const plan = buildWindowsRemoteEvidenceBatch(probes);
+  const plan = buildWindowsRemoteEvidenceBatch(probes, { markerNonce: "selftest01" });
+  const secondPlan = buildWindowsRemoteEvidenceBatch(probes, { markerNonce: "selftest02" });
+  let staleMarkerRejected = false;
+  try {
+    parseWindowsRemoteEvidenceOutput(`${plan.startMarker}\n[]\n${plan.endMarker}`, secondPlan);
+  } catch { staleMarkerRejected = true; }
   const helperNamespace = createPowerShellHelperNamespace(["AppendResult", "ReadState"], { seed: "self-test" });
   let shortHelperRejected = false;
   try { validatePowerShellHelperNames(["R"]); } catch { shortHelperRejected = true; }
   let terminalCalls = 0;
   const batch = await runWindowsRemoteEvidenceBatch({
     verified: true,
-    async execute() {
+    async execute(currentPlan) {
       terminalCalls += 1;
       return {
-        stdout: `prompt>${START_MARKER}\n[{"id":"file-1","kind":"file","ok":true,"value":{"exists":true},"error":null},{"id":"proc-1","kind":"process","ok":true,"value":[],"error":null}]\n${END_MARKER}\nprompt>`,
+        stdout: `prompt>${currentPlan.startMarker}\n[{"id":"file-1","kind":"file","ok":true,"value":{"exists":true},"error":null},{"id":"proc-1","kind":"process","ok":true,"value":[],"error":null}]\n${currentPlan.endMarker}\nprompt>`,
         metrics: { sky_calls: 2, state_captures: 0 },
       };
     },
   }, probes);
   if (!plan.command.includes("-EncodedCommand") || !plan.script.includes("Get-Command -Name")
+      || plan.startMarker === secondPlan.startMarker || !plan.script.includes(plan.startMarker) || !staleMarkerRejected
       || !plan.script.includes("function __Cusp_") || /(?:^|[;$])\$r(?:=|\+)/u.test(plan.script)
       || helperNamespace.names.length !== 2 || !helperNamespace.names.every((name) => name.startsWith("__Cusp_"))
       || !shortHelperRejected || !batch.ok || !batch.complete || terminalCalls !== 1
@@ -740,7 +800,7 @@ export async function selfTest() {
       bridgeReadCount += 1;
       if (bridgeReadCount === 1) return bridgeClipboardValue; // pre-run snapshot
       if (bridgeReadCount === 2) return "prompt>";            // first copy: not ready
-      return `prompt>${START_MARKER}\n[{"id":"v-1","kind":"wait-file","ok":true,"value":{"elapsedMs":120},"error":null}]\n${END_MARKER}`;
+      return `prompt>${bridgePlan.startMarker}\n[{"id":"v-1","kind":"wait-file","ok":true,"value":{"elapsedMs":120},"error":null}]\n${bridgePlan.endMarker}`;
     },
     async write(value) { bridgeWrote = value; return { sky_calls: 0 }; },
     async restore(value) { bridgeClipboardValue = value; },
@@ -756,15 +816,50 @@ export async function selfTest() {
     waitAttempts: 3,
     waitIntervalMs: 0,
   });
+  const bridgePlan = buildWindowsRemoteEvidenceBatch([
+    { id: "v-1", kind: "wait-file", path: "C:\\temp\\done.txt", timeoutMs: 5000, intervalMs: 250 },
+  ], { markerNonce: "bridge001" });
   const bridgeBatch = await visibleBridge.runBatch({
-    probes: [{ id: "v-1", kind: "wait-file", path: "C:\\temp\\done.txt", timeoutMs: 5000, intervalMs: 250 }],
+    plan: bridgePlan,
   });
   if (!bridgeBatch.ok || !bridgeBatch.complete || bridgeBatch.results[0]?.ok !== true
       || bridgeBatch.metrics.state_captures !== 0 || bridgeBatch.metrics.terminal_batches !== 1
       || bridgeBatch.metrics.sky_calls !== 7 || bridgeBatch.timed_out_ids.length !== 0
+      || bridgeBatch.metrics.paste_chunks !== 1
       || !String(bridgeWrote).includes("-EncodedCommand") || bridgeClipboardValue !== "previous"
       || bridgeKeys.join(",") !== "click:10,Control_L+v,Return,Control_L+a,Control_L+c,Control_L+a,Control_L+c") {
     throw new Error("visible-client terminal bridge self-test failed");
+  }
+
+  // A signaled clipboard limit triggers local adaptive chunking before Enter.
+  // The one-paste normal path above remains unchanged.
+  const chunkPlan = buildWindowsRemoteEvidenceBatch([
+    { id: "chunk-1", kind: "file", path: "C:\\demo.txt" },
+  ], { markerNonce: "chunk001" });
+  let chunkReadCount = 0;
+  let chunkWriteCount = 0;
+  const chunkBridge = createVisibleClientTerminalBridge({ async press_key() {} }, {
+    verified: true,
+    window: bridgeWindow,
+    clipboard: {
+      async read() {
+        chunkReadCount += 1;
+        if (chunkReadCount === 1) return "previous";
+        return `${chunkPlan.startMarker}\n[{"id":"chunk-1","kind":"file","ok":true,"value":{"exists":true},"error":null}]\n${chunkPlan.endMarker}`;
+      },
+      async write(value) {
+        chunkWriteCount += 1;
+        if (chunkWriteCount === 1) return { sky_calls: 0, truncated: true, writtenChars: 256, maxReliableChars: 256 };
+        return { sky_calls: 0, writtenChars: String(value).length };
+      },
+      async restore() {},
+    },
+    waitAttempts: 1,
+  });
+  const chunkResult = await chunkBridge.execute(chunkPlan);
+  if (!chunkResult.ok || chunkResult.metrics.paste_chunks <= 1 || chunkResult.metrics.state_captures !== 0
+      || chunkResult.metrics.model_roundtrips !== 0 || chunkWriteCount !== chunkResult.metrics.paste_chunks + 1) {
+    throw new Error("adaptive clipboard chunking self-test failed");
   }
   let bridgeTimedOut = false;
   let timeoutRestored = false;
@@ -808,12 +903,22 @@ export async function selfTest() {
     throw new Error("wait-only request fell back to a non-terminal route");
   }
   let collectReads = 0;
+  let collectMarkers = null;
   const collectClipboard = {
     async read() {
       collectReads += 1;
-      return `prompt>${START_MARKER}\n[${["r-1", "r-2", "r-3"].map((id) => `{"id":"${id}","kind":"x","ok":true,"value":{},"error":null}`).join(",")}]\n${END_MARKER}`;
+      if (collectReads === 1) return "previous";
+      return `prompt>${collectMarkers.startMarker}\n[${["r-1", "r-2", "r-3"].map((id) => `{"id":"${id}","kind":"x","ok":true,"value":{},"error":null}`).join(",")}]\n${collectMarkers.endMarker}`;
     },
-    async write() { return { sky_calls: 0 }; },
+    async write(value) {
+      const encoded = String(value).split("-EncodedCommand ").at(-1);
+      const script = Buffer.from(encoded, "base64").toString("utf16le");
+      collectMarkers = {
+        startMarker: script.match(/__CUSPRO_EVIDENCE_BEGIN_[a-z0-9]+__/u)?.[0],
+        endMarker: script.match(/__CUSPRO_EVIDENCE_END_[a-z0-9]+__/u)?.[0],
+      };
+      return { sky_calls: 0 };
+    },
     async restore() {},
   };
   const collectBridge = createVisibleClientTerminalBridge({ async press_key() {} }, {

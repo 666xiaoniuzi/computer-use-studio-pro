@@ -98,4 +98,4 @@ Success is not “the button was clicked.” Require `Installed`, an enabled tog
 
 ## Finish criteria
 
-Before reporting success, capture one fresh remote view and verify the requested outcome directly. Include only evidence from the remote computer.
+Before reporting success, meet the declared `presence`, `launch`, `functional`, or `user_flow` level. Reuse current structured evidence; add one fresh remote view only for missing or GUI-level proof. Include only remote-computer evidence.

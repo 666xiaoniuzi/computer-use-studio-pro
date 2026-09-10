@@ -3,8 +3,8 @@
 First inspect the tools actually configured for this Claude Code session. Claude Code with only shell tools can use file/API routes and the shared Python helpers, but cannot directly operate a desktop application.
 
 - Map browser or desktop MCP tools to the core loop: observe -> one action -> refresh -> explicit postcondition.
-- Apply the shared single-pass default on local and remote routes: inventory effective state and override layers once, batch backed-up idempotent changes, reload/restart once, run one functional test, then clean task-owned artifacts and restore the visible window state.
-- On Windows, resolve native/CMD launchers before `.ps1`, use long collision-checked PowerShell helper names, wait before fallback launches, preflight long remote ASCII/IME input, and distinguish `environment_gap` from an executed workflow failure.
+- Select execution/acceptance from known capabilities with zero probes: semantic routes for deterministic work, GUI for interaction, and hybrid for desktop products. Then use the shared single-pass inventory/mutation/reload/test/cleanup flow.
+- On Windows, execute the selected native/CMD absolute path rather than a bare name. Submitted commands use an IME-independent verified clipboard bridge; key fallback needs epoch-bound ASCII proof. Grade evidence from `presence` through `user_flow` and keep environment gaps distinct.
 - Prefer the browser's DOM/accessibility interface over screenshots; prefer an accessibility-capable desktop tool over coordinates.
 - Do not invoke `adapters/codex/scripts/sky_fast_path.mjs`, `sky`, or any Codex-specific API.
 - If the task needs a GUI action and no compatible MCP/browser/desktop tool is available, stop and request a tool or user takeover.

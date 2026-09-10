@@ -4,9 +4,9 @@ Before acting, inventory the host's available interfaces: API/connector, filesys
 
 Choose the highest semantic interface that preserves the user's intended visible result. Translate the core loop to the host as: observe a current state, take one bounded action, obtain a fresh state, and test a declared postcondition.
 
-Apply the shared single-pass default on local and remote routes: inventory effective state and override layers once, batch backed-up idempotent changes, reload/restart once, run one functional test, then clean task-owned artifacts and restore the visible window state.
+Select execution/acceptance from known capabilities with zero probes: semantic routes for deterministic work, GUI for interaction, and hybrid for desktop products. Then use the shared single-pass inventory/mutation/reload/test/cleanup flow.
 
-On Windows, resolve native/CMD launchers before `.ps1`, use long collision-checked PowerShell helper names, wait before fallback launches, preflight long remote ASCII/IME input, and distinguish `environment_gap` from an executed workflow failure.
+On Windows, execute the selected native/CMD absolute path rather than a bare name. Submitted commands use an IME-independent verified clipboard bridge; key fallback needs epoch-bound ASCII proof. Grade evidence from `presence` through `user_flow` and keep environment gaps distinct.
 
 If the host cannot provide a required interface, do not invent it. Use an alternative supported route or request user assistance. Keep the host's own safety confirmations, rate limits, and permission rules.
 
