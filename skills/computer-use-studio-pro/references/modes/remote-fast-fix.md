@@ -67,11 +67,13 @@ If the provider displays a secret once, keep the full value inside the approved 
 ## Operating loop
 
 1. Confirm remote input forwarding and target binding. Keep client connection fields/control bars separate from the remote desktop data plane.
-2. Run a short feasibility map before downloads: current OS, installed state, requested application's actual capability, dependency path, and success test. Classify the fault as `remote-input`, `network`, `account/auth`, `permissions`, `app/version`, `configuration`, or `resource/storage`.
+2. Run one short read-only feasibility batch before downloads or edits: current OS, installed state, requested application's actual capability, dependency path, success test, and all effective override layers. For command-line/API/model tools, include command/version, process environment, application config, selector/launcher config, auth-store metadata, and startup/user environment without returning secret values. Classify the fault as `remote-input`, `network`, `account/auth`, `permissions`, `app/version`, `configuration`, or `resource/storage`.
 3. Rank at most three supported hypotheses and choose the cheapest separating check.
-4. Perform one low-risk repair or verified stable transaction against an explicit postcondition.
-5. Verify from the current action-refresh state, log, or minimal functional test when it is still fresh and sufficient; request another observation only when evidence is missing or may have changed. On the second unchanged attempt, pivot.
+4. Back up the exact touched values and perform one idempotent low-risk repair batch or verified stable transaction against an explicit postcondition. Avoid sequential trial edits when the inventory already exposes multiple precedence layers.
+5. Reload/restart once and run one real functional test. Verify its structured output, exit code, log, or marker through the terminal/evidence bridge when available; request another observation only when evidence is missing or may have changed. On an opaque canvas, do not rerun a successful test solely for accessibility recognition. On the second unchanged attempt, pivot.
 6. Require `session.verifySuccess()` and `success_verified=true` before cleanup. Eligible terminal evidence is reused, saving one state capture.
+
+Use a 12-minute soft decision budget for a known configuration repair and a 20-minute budget for a routine fresh user-space installation. At the boundary, emit the compact failure signature and change diagnostic strategy. Keep a separate active-execution meter; call `pauseActive(category)` and `resumeActive()` around disconnect, customer takeover, host-limit waits, and other explicit external waits.
 
 Read [rapid-playbook.md](../remote/rapid-playbook.md) only for the active diagnostic branch.
 
@@ -110,6 +112,6 @@ Close in this order:
 4. End Agent input and revoke/close the task lease. Disconnect only when the task contract calls for it; otherwise leave the customer deliverable in a stable state.
 5. Remove and verify the same classes under the local task root. Use `scripts/task_artifacts.py` when local working files exist; any untracked remainder is `cleanup_pending`.
 6. Minimize or close the remote-client window, then foreground the host task surface; the Codex adapter calls `session.presentUserSurface("codex")`. Use the latest bound handle or one cheap `list_windows` plus `activate_window`; take no screenshot/state capture for this handback.
-7. After Codex is visible, capture one final meter report and show the visible outcome, exact deliverable name/path, root cause, 1-3 changes, fresh verification, masked API status when applicable, both cleanup states, Token usage, start/finish timestamps, and total wall-clock duration in `HH:MM:SS.mmm`. Prefer exact host totals; otherwise label the compact-view estimate and show its basis. Include customer handoff, reconnect, download, and wait time because the clock spans the whole remote task.
+7. After Codex is visible, capture one final meter report and show the visible outcome, exact deliverable name/path, root cause, 1-3 changes, fresh verification, masked API status when applicable, both cleanup states, Token usage, start/finish timestamps, total wall-clock duration, and active execution duration in `HH:MM:SS.mmm`. Prefer exact host totals; otherwise label the compact-view estimate and show its basis. Wall clock includes handoff, reconnect, download, and wait time; active execution excludes explicitly recorded disconnect, customer takeover, host-limit wait, and other external-wait intervals.
 
 Never clean broad user folders, application/system caches, historical logs, ambiguous paths, or pre-existing content as part of task cleanup.

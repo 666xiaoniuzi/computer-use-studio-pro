@@ -42,6 +42,21 @@ An explicit task grants continuous task authorization for ordinary low-risk reve
 
 Emit `tokenView(...)`/compact summaries so raw observations and verbose history stay inside the runtime. Default compact budget is about 900 characters: about 400 for stable polling/window lifecycle and up to 1800 for a new branch, ambiguity, or recovery. Remote work starts with one complete screenshot. On a stable opaque remote canvas, use `session.remoteCanvasText(...)` for ordinary ASCII fields: one current focus map, forwarded key events, and one terminal screenshot instead of a state/screenshot call after every character or action. Use cheap `list_windows` for lifecycle checks and screenshot-free compact state for bounded semantic checks. Never trade away fresh evidence, device lock, connected-session authorization, confirmation boundaries, secret redaction, rollback, or cleanup merely to reduce tokens.
 
+## Default optimized path
+
+Use the same single-pass normal path for local and remote tasks:
+
+1. Run one read-only inventory batch before the first mutation. Collect the effective state, the smallest useful dependency map, and every configuration layer that can override the requested result.
+2. Choose one separating diagnosis, save the exact original values that may be touched, and apply idempotent changes in one batch when the target supports it.
+3. Reload or restart the affected application once, then run one real end-to-end functional check. Prefer a structured result, exit code, log marker, or output file over repeated visual proof.
+4. Clean task-owned temporary artifacts and restore the original visible window/desktop state in the close batch.
+
+For command-line tools, model/provider switches, API clients, and development environments, the initial inventory must map command resolution and version, process environment, application configuration, selector/launcher configuration, authentication-store metadata, and startup/user environment precedence before editing any layer. Read secret presence or fingerprints only; never expose secret values. This prevents a corrected file from being silently overridden by a stale environment or auth store.
+
+Use one initial observation and one terminal observation on the normal path. Add an intermediate capture only after a layout/focus transition, missing assertion, or recovery branch. On opaque canvases, emit a machine-readable success marker from the real functional test and verify that marker through the existing terminal/evidence bridge; do not repeat the test solely because accessibility cannot read rendered pixels.
+
+Treat 12 minutes for a known configuration repair and 20 minutes for a routine fresh user-space installation as soft decision budgets, not completion claims. When a budget is exceeded, immediately summarize the blocking signature and pivot to the detailed diagnostic workflow instead of continuing the same interaction pattern. Track active execution time separately from wall-clock time; pause the active meter during disconnection, customer takeover, host-limit waiting, and other explicit external waits.
+
 ## Remote invariants
 
 Remote rules — `entire-bound-device` surface, exact customer device ID, connected-session lease, private-input handback, disconnect/reconnect, and cleanup — live in `fast-contract.md` and [remote-fast-fix.md](references/modes/remote-fast-fix.md). Require an exact customer device ID and one connected-session authorization lease before input; each input reads only the cached gate. Foreground the remote client at task start. Before takeover, present the remote client for customer-computer input or Codex for host-side Codex input; continue only on a matching customer-done event. Keep secrets out of model/log output and clear task traces.

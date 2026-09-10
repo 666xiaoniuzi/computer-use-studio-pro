@@ -325,26 +325,70 @@ export function createTaskUsageMeter(options = {}) {
     return timestamp;
   };
   let startedAtMs = normalizeStart(options.startedAtMs ?? readClock());
+  let activeSinceMs = startedAtMs;
+  let activeElapsedMs = 0;
+  let pausedAtMs = null;
+  let pausedCategory = null;
+  let excludedWaits = {};
 
   const resetCounters = () => {
     Object.assign(counters, { views: 0, compact_chars: 0, tool_calls: 0, screenshots: 0, actions: 0 });
   };
+  const resetTiming = (timestamp) => {
+    startedAtMs = timestamp;
+    activeSinceMs = timestamp;
+    activeElapsedMs = 0;
+    pausedAtMs = null;
+    pausedCategory = null;
+    excludedWaits = {};
+  };
+  const waitCategory = (value) => String(value ?? "external_wait").trim().slice(0, 64) || "external_wait";
   const timing = () => {
     const finishedAtMs = readClock();
     const durationMs = Math.max(0, Math.round(finishedAtMs - startedAtMs));
+    const activeDurationMs = Math.max(0, Math.round(activeElapsedMs + (pausedAtMs === null ? finishedAtMs - activeSinceMs : 0)));
+    const currentExcluded = { ...excludedWaits };
+    if (pausedAtMs !== null) {
+      const category = pausedCategory ?? "external_wait";
+      currentExcluded[category] = Math.max(0, Math.round((currentExcluded[category] ?? 0) + finishedAtMs - pausedAtMs));
+    }
+    const excludedWaitMs = Math.max(0, durationMs - activeDurationMs);
     return {
       started_at: new Date(startedAtMs).toISOString(),
       finished_at: new Date(finishedAtMs).toISOString(),
       duration_ms: durationMs,
       duration_human: formatDurationMs(durationMs),
+      active_duration_ms: activeDurationMs,
+      active_duration_human: formatDurationMs(activeDurationMs),
+      excluded_wait_ms: excludedWaitMs,
+      excluded_wait_human: formatDurationMs(excludedWaitMs),
+      excluded_waits: currentExcluded,
     };
   };
 
   return {
     startTask(value = readClock()) {
-      startedAtMs = normalizeStart(value);
+      resetTiming(normalizeStart(value));
       resetCounters();
       return { started_at: new Date(startedAtMs).toISOString() };
+    },
+    pauseActive(category = "external_wait", value = readClock()) {
+      const timestamp = normalizeStart(value);
+      if (pausedAtMs !== null) return { paused: true, category: pausedCategory, paused_at: new Date(pausedAtMs).toISOString() };
+      activeElapsedMs += Math.max(0, timestamp - activeSinceMs);
+      pausedAtMs = timestamp;
+      pausedCategory = waitCategory(category);
+      return { paused: true, category: pausedCategory, paused_at: new Date(pausedAtMs).toISOString() };
+    },
+    resumeActive(value = readClock()) {
+      const timestamp = normalizeStart(value);
+      if (pausedAtMs === null) return { paused: false, resumed_at: new Date(timestamp).toISOString() };
+      const category = pausedCategory ?? "external_wait";
+      excludedWaits[category] = Math.max(0, (excludedWaits[category] ?? 0) + timestamp - pausedAtMs);
+      pausedAtMs = null;
+      pausedCategory = null;
+      activeSinceMs = timestamp;
+      return { paused: false, resumed_at: new Date(timestamp).toISOString() };
     },
     view(result, viewOptions = {}) {
       const view = tokenView(result, viewOptions);
@@ -368,7 +412,7 @@ export function createTaskUsageMeter(options = {}) {
       };
     },
     reset(value = readClock()) {
-      startedAtMs = normalizeStart(value);
+      resetTiming(normalizeStart(value));
       resetCounters();
       return { started_at: new Date(startedAtMs).toISOString() };
     },
@@ -3722,14 +3766,26 @@ export async function selfTest() {
   usageNow += 65_432;
   const estimatedUsage = usageMeter.report();
   const exactUsage = usageMeter.report({ input_tokens: 12, output_tokens: 8, cached_input_tokens: 4 });
+  usageMeter.pauseActive("disconnect");
+  usageNow += 20_000;
+  const pausedUsage = usageMeter.report();
+  usageMeter.resumeActive();
+  usageNow += 5_000;
+  const resumedUsage = usageMeter.report();
   usageNow += 1_000;
   const restarted = usageMeter.reset();
   const resetUsage = usageMeter.report();
   if (estimatedUsage.source !== "estimated-compact-view" || estimatedUsage.estimated_compact_view_tokens < 1
       || estimatedUsage.duration_ms !== 65_432 || estimatedUsage.duration_human !== "00:01:05.432"
+      || estimatedUsage.active_duration_ms !== 65_432 || estimatedUsage.excluded_wait_ms !== 0
       || exactUsage.source !== "host-exact" || exactUsage.total_tokens !== 20 || exactUsage.cached_input_tokens !== 4
       || exactUsage.started_at !== "2026-08-29T00:00:00.000Z" || exactUsage.finished_at !== "2026-08-29T00:01:05.432Z"
-      || restarted.started_at !== "2026-08-29T00:01:06.432Z" || resetUsage.duration_ms !== 0
+      || pausedUsage.duration_ms !== 85_432 || pausedUsage.active_duration_ms !== 65_432
+      || pausedUsage.excluded_wait_ms !== 20_000 || pausedUsage.excluded_waits.disconnect !== 20_000
+      || resumedUsage.duration_ms !== 90_432 || resumedUsage.active_duration_ms !== 70_432
+      || resumedUsage.excluded_wait_ms !== 20_000 || resumedUsage.excluded_waits.disconnect !== 20_000
+      || restarted.started_at !== "2026-08-29T00:01:31.432Z" || resetUsage.duration_ms !== 0
+      || resetUsage.active_duration_ms !== 0 || resetUsage.excluded_wait_ms !== 0
       || resetUsage.views !== 0 || resetUsage.compact_chars !== 0) {
     throw new Error("task usage and duration meter self-test failed");
   }

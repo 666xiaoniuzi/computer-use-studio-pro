@@ -1,8 +1,9 @@
 name: computer-use-studio-pro
-version: 0.9.1
+version: 0.9.2
 description: >
   Automatically invoked single-Skill router for token-efficient local and
-  remote computer control with persistent autonomous software acquisition,
+  remote computer control with a single-pass optimized execution default,
+  persistent autonomous software acquisition,
   a persistent runtime, compact result views,
   fresh observation leases, multi-client remote device locking, continuous
   connected-session authorization, event-driven customer handback, verified
