@@ -6,6 +6,7 @@ This static playbook is the fallback for a verified-cache miss or a new branch. 
 
 - Remote input and focus
 - Network and proxy
+- Configuration, provider, and API repair
 - Plugin or package installation
 - App startup, crash, or freeze
 - Permissions and protected actions
@@ -43,6 +44,19 @@ Check, in order:
 - service/CDN domains required by the failing app.
 
 Changing a node, proxy mode, VPN/TUN, firewall, or security setting is consequential. Capture the original state and follow action-time confirmation requirements.
+
+## Configuration, provider, and API repair
+
+Run one secret-redacted inventory batch before editing:
+
+```text
+command/version | process environment | app config | selector/launcher config
+| auth-store metadata | startup/user environment | effective endpoint/provider/model
+```
+
+Determine precedence from the running process and actual functional-test output. Back up only the exact values to be touched, update every stale overriding layer in one idempotent batch, reload/restart once, and issue one real minimal request. Emit a structured success marker plus exit status through the terminal/evidence bridge. On an opaque canvas, reuse that marker rather than repeating the request for visual recognition.
+
+Use a 12-minute soft decision budget. If the result still misses its postcondition, return the compact failure signature and switch to the next diagnostic class instead of repeating the same edit/check cycle.
 
 ## Plugin or package installation
 

@@ -7,10 +7,14 @@ Use this compact ladder whenever remote success involves checking, downloading, 
 Before opening a store or browser, map in one pass:
 
 ```text
-remote OS/architecture | already installed/version | requested capability | actual product support | required dependency | functional success test
+remote OS/architecture | already installed/version | requested capability | actual product support
+| required dependency | command/process environment | app + selector config precedence
+| auth-store metadata | functional success test
 ```
 
 Resolve product mismatches before spending download time. In particular, a coding-client switcher such as CC Switch configures the coding clients it supports; it does not change the model inside the official ChatGPT desktop application.
+
+Return only secret presence or fingerprints. When configuration is part of the task, collect every effective override layer in this same pass, then apply one backed-up idempotent batch, reload/restart once, and run one real end-to-end check.
 
 ## Source order
 
@@ -31,6 +35,7 @@ Record publisher, product, version, architecture, source URL/channel, and signat
 - Prefer a non-elevated per-user install path. Keep action-time handling for system-wide elevation, private input, account sign-in, license/payment, and other host-required confirmation points.
 - When the remote task exposes only a visible terminal, use the bound terminal-control path directly and verify the terminal result in the same runtime. Do not convert a routine terminal step into a customer handoff.
 - Prefer one download path at a time. If it fails, record the exact failure, pivot once to the next verified source, and avoid duplicate installers.
+- Use a 20-minute soft decision budget for a routine fresh user-space installation. At the boundary, switch diagnostic strategy using the current failure signature instead of continuing the same interaction pattern.
 
 ## Windows quick route
 

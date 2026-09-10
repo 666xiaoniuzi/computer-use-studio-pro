@@ -32,6 +32,8 @@ Use these levers:
 24. move download/install/service/port ready waits into bounded in-batch probes (`wait-file`/`wait-process`/`wait-service`/`wait-port`) so a wait is one bridge call and an expiry is a local `timed_out_ids` decision, not repeated GUI observation.
 25. bind postconditions to the element's own accessibility tree line (`elementIndex` + value/label assertions) so a value appearing elsewhere on screen cannot satisfy verification; keep the check zero-call and case sensitivity intact.
 26. pay the runtime cold-start tax before the first decision with `warmUpRuntime` (one cheap `list_windows`); keep the session profile and route EWMA stats in memory only.
+27. for software/configuration work, inventory all effective override layers once, apply backed-up idempotent edits in one batch, reload/restart once, and run one end-to-end functional test with structured evidence.
+28. track active execution separately from wall clock with `pauseActive(category)`/`resumeActive()` so disconnect, takeover, and host-limit waits do not distort operator-efficiency comparisons.
 
 Do not reduce latency by reusing stale indexes/coordinates, hiding confirmations, or queueing general unverified GUI macros. Terminal-only input bursts require current focus proof, stable single-field scope, a narrow keyboard vocabulary, an explicit confirmation-boundary declaration, and terminal semantic or visual verification. The remote-canvas variant additionally blocks device-ID payloads and defaults to key-event forwarding.
 
@@ -42,6 +44,7 @@ Run the same task, same application state, and same terminal evidence at least t
 Track:
 
 - wall-clock completion time;
+- active execution time and categorized excluded waits;
 - tool roundtrips and summed tool duration;
 - full-window, cropped, structured, and all-display captures;
 - observation characters as a token proxy;
@@ -54,6 +57,7 @@ Track:
 ## Suggested acceptance checks
 
 - Success and side effects must be no worse than baseline.
+- The task meter reports wall-clock time, active execution time, and excluded wait categories consistently; their durations reconcile within clock-rounding tolerance.
 - The runtime initializes once per healthy session.
 - Full-window captures occur only for visual mapping, layout changes, or recovery.
 - Stable accessibility tasks avoid screenshot capture.
@@ -84,7 +88,7 @@ Do not call a route optimized unless, across at least three comparable runs:
 
 - successful terminal evidence and side effects are no worse than baseline;
 - human interventions are no greater than baseline; and
-- median wall-clock time is at least 15% lower, or model roundtrips are at least 25% lower without increasing wall-clock time.
+- median active execution time is at least 15% lower, and median wall-clock time does not regress after excluding environment-driven wait variance; or model roundtrips are at least 25% lower without increasing active execution time.
 
 If the gate is not met, use the native controller as the zero-overhead fallback for that task/app pattern and record the failed optimization signature. A Skill invocation is not proof that the optimized route should be used.
 
@@ -94,7 +98,7 @@ Summarize collected metrics with:
 python scripts/operator_state.py metrics --state <run>/state.json
 ```
 
-Compare the median task time, roundtrips, capture mix, and observation characters. Report uncertainty and failures, not only the improvement percentage.
+Compare median wall-clock and active execution time, excluded waits, roundtrips, capture mix, and observation characters. Report uncertainty and failures, not only the improvement percentage.
 
 ## 0.6.0 Windows reference measurement
 

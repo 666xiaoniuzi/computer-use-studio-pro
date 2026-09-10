@@ -3,6 +3,7 @@
 Use only the computer, browser, accessibility, filesystem, or connector tools registered in the current Hermes installation. A Hermes skill supplies procedure; it does not install a desktop driver by itself.
 
 - Inspect the available tool names and map them to observe, act, refresh, and verify before starting.
+- Apply the shared single-pass default on local and remote routes: inventory effective state and override layers once, batch backed-up idempotent changes, reload/restart once, run one functional test, then clean task-owned artifacts and restore the visible window state.
 - Prefer semantic browser/accessibility operations. Treat screenshots and coordinates as short-lived observations.
 - Shared Python helpers in `scripts/` may be used when the host permits local execution; do not use the Codex-only Node helper.
 - For an explicit software or dependency request, treat download, verified installer launch, user-space installation, and functional verification as a continuous task action. Run it directly through the registered terminal/computer/remote-executor tools; do not ask the user to copy commands or approve routine steps.
